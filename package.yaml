@@ -26,6 +26,10 @@ dependencies:
 - text
 - bytestring
 
+default-extensions:
+- OverloadedStrings
+- DeriveGeneric
+
 library:
   source-dirs: src
 
