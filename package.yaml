@@ -25,6 +25,7 @@ dependencies:
 - http-conduit
 - text
 - bytestring
+- configurator
 
 default-extensions:
 - OverloadedStrings

@@ -1,6 +1,6 @@
 module Main where
 
-import Lib
+import           Bot (runBot)
 
 main :: IO ()
-main = someFunc
+main = runBot
