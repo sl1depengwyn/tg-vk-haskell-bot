@@ -1,5 +1,6 @@
 module Bot
   ( runBot
+  , BotConfig(..)
   ) where
 
 import qualified Control.Monad.IO.Class     as MIO
@@ -8,8 +9,6 @@ import qualified Data.ByteString            as B
 import qualified Data.ByteString.Char8      as BC
 import qualified Data.ByteString.Lazy       as L
 import qualified Data.ByteString.Lazy.Char8 as LC
-import qualified Data.Configurator          as CFG
-import qualified Data.Configurator.Types    as CFG
 import           Data.Maybe
 import qualified Data.Text                  as T
 import qualified Data.Text.Encoding         as TE
@@ -18,39 +17,21 @@ import           Network.HTTP.Simple
 
 type ChatID = BC.ByteString
 
+data BotConfig =
+  BotConfig
+    { token         :: BC.ByteString
+    , helpMessage   :: T.Text
+    , repeatMessage :: T.Text
+    }
+
 buildRequest :: BC.ByteString -> BC.ByteString -> Query -> Request
 buildRequest host path query =
   setRequestHost host $
-  setRequestQueryString query $
-  setRequestPath path $
-  setRequestSecure True $ setRequestPort 443 defaultRequest
+  setRequestQueryString query $ setRequestPath path $ setRequestSecure True $ setRequestPort 443 defaultRequest
 
 -- >>> buildRequest host (mconcat ["/bot", apiKey, "/sendMessage"]) [("chat_id", Nothing), ("text", Just "s")]
 host :: BC.ByteString
 host = "api.telegram.org"
-
-config :: IO CFG.Config
-config = CFG.load ["config.cfg"]
-
-apiKey :: IO BC.ByteString
-apiKey = do
-  cfg <- config
-  maybeToken <- CFG.lookup cfg "token"
-  if isJust maybeToken
-    then do
-      let (Just token) = maybeToken
-      return token
-    else do
-      return "No token field in config file"
-
-sendMessage :: BC.ByteString -> Message -> IO (Response BC.ByteString)
-sendMessage chatId message = do
-  apiKey' <- apiKey
-  let path = mconcat ["/bot", apiKey', "/sendMessage"]
-  let messageText = text message
-  let query =
-        [("chat_id", Just chatId), ("text", Just (TE.encodeUtf8 messageText))]
-  httpBS $ buildRequest host path query
 
 data User =
   User
@@ -81,7 +62,7 @@ data Update =
 instance FromJSON Update where
   parseJSON (Object o) = Update <$> o .: "update_id" <*> o .: "message"
 
-data UpdatesResponse =
+newtype UpdatesResponse =
   UpdatesResponse
     { result :: [Update]
     }
@@ -89,34 +70,43 @@ data UpdatesResponse =
 
 instance FromJSON UpdatesResponse
 
-getUpdates :: Show a => Maybe a -> IO (Either String [Update])
-getUpdates offset = do
-  apiKey' <- apiKey
-  let path = mconcat ["/bot", apiKey', "/getUpdates"]
+sendMessage :: BC.ByteString -> BC.ByteString -> Message -> IO (Response BC.ByteString)
+sendMessage apiKey chatId message = httpBS $ buildRequest host path query
+  where
+    path = mconcat ["/bot", apiKey, "/sendMessage"]
+    messageText = text message
+    query = [("chat_id", Just chatId), ("text", Just (TE.encodeUtf8 messageText))]
+
+getUpdates :: Show a => BC.ByteString -> Maybe a -> IO (Either String [Update])
+getUpdates apiKey offset = do
+  let path = mconcat ["/bot", apiKey, "/getUpdates"]
   let query = [("timeout", Just "25"), ("offset", BC.pack . show <$> offset)]
   response <- httpBS $ buildRequest host path query
   let responseBody = getResponseBody response
-  let responseJson =
-        eitherDecode ((LC.fromChunks . return) responseBody) :: Either String UpdatesResponse
+  let responseJson = eitherDecode ((LC.fromChunks . return) responseBody) :: Either String UpdatesResponse
   let updates = result <$> responseJson
   return updates
 
-replyMessage :: Update -> IO (Response BC.ByteString)
-replyMessage update = sendMessage senderId (message update)
+replyTextMessage :: BC.ByteString -> Update -> IO (Response BC.ByteString)
+replyTextMessage apiKey update = sendMessage apiKey senderId (message update)
   where
     (User sndrId _) = (from . message) update
     senderId = (BC.pack . show) sndrId
 
-longPolling :: Maybe Int -> IO ()
-longPolling offset = do
-  eitherUpdates <- getUpdates offset
+processTextMessage = undefined
+
+longPolling :: BotConfig -> Maybe Int -> IO ()
+longPolling config offset = do
+  let (BotConfig apiKey _ _) = config
+  eitherUpdates <- getUpdates apiKey offset
   let (Right updates) = eitherUpdates
   let lastUpdateId =
         if null updates
           then Nothing
           else Just (updateId (last updates) + 1)
-  responses <- mapM replyMessage updates
+  responses <- mapM (replyTextMessage apiKey) updates
   mapM_ (BC.putStrLn . getResponseBody) responses
-  longPolling lastUpdateId
+  longPolling config lastUpdateId
 
-runBot = longPolling Nothing
+runBot :: BotConfig -> IO ()
+runBot config = longPolling config Nothing
