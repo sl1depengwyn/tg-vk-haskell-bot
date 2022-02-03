@@ -11,6 +11,7 @@ import qualified Data.ByteString            as B
 import qualified Data.ByteString.Char8      as BC
 import qualified Data.ByteString.Lazy       as L
 import qualified Data.ByteString.Lazy.Char8 as LC
+import qualified Data.Map                   as M
 import           Data.Maybe
 import qualified Data.Text                  as T
 import qualified Data.Text.Encoding         as TE
@@ -19,11 +20,14 @@ import           Network.HTTP.Simple
 
 type ChatID = BC.ByteString
 
+type UserToRepeat = M.Map Int Int
+
 data BotConfig =
   BotConfig
     { token         :: BC.ByteString
     , helpMessage   :: T.Text
     , repeatMessage :: T.Text
+    , failMessage   :: T.Text
     }
 
 buildRequest :: BC.ByteString -> BC.ByteString -> Query -> Request
@@ -34,6 +38,9 @@ buildRequest host path query =
 -- >>> buildRequest host (mconcat ["/bot", apiKey, "/sendTextMessage"]) [("chat_id", Nothing), ("text", Just "s")]
 host :: BC.ByteString
 host = "api.telegram.org"
+
+usersDB :: UserToRepeat
+usersDB = M.Map.fromList []
 
 newtype User =
   User
@@ -59,6 +66,9 @@ data Message
   | StickerMessage
       { from    :: User
       , sticker :: Sticker
+      }
+  | UnsupportedMessage
+      { from :: User
       }
   deriving (Show, G.Generic)
 
@@ -114,16 +124,17 @@ replyTextMessage apiKey msg = sendTextMessage apiKey senderId (text msg)
     (User senderId) = from msg
 
 processMessage :: BotConfig -> Message -> IO (Response BC.ByteString)
-processMessage (BotConfig api helpMsg repeatMsg) (TextMessage (User userId) text) =
+processMessage (BotConfig api helpMsg repeatMsg _) (TextMessage (User userId) text) =
   case text of
     "/help"   -> sendTextMessage api userId helpMsg
     "/repeat" -> sendTextMessage api userId repeatMsg
     _         -> sendTextMessage api userId text
-processMessage (BotConfig api _ _) (StickerMessage (User userId) (Sticker fileId)) = sendSticker api userId fileId
+processMessage (BotConfig api _ _ _) (StickerMessage (User userId) (Sticker fileId)) = sendSticker api userId fileId
+processMessage (BotConfig api _ _ failMsg) (UnsupportedMessage (User userId)) = sendTextMessage api userId failMsg
 
 longPolling :: BotConfig -> Maybe Int -> IO ()
 longPolling config offset = do
-  let (BotConfig apiKey _ _) = config
+  let (BotConfig apiKey _ _ _) = config
   eitherUpdates <- getUpdates apiKey offset
   let (Right updates) = eitherUpdates
   let lastUpdateId =

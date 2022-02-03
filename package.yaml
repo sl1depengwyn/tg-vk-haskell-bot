@@ -21,6 +21,7 @@ description:         Please see the README on GitHub at <https://github.com/sl1d
 
 dependencies:
 - base >= 4.7 && < 5
+- containers
 - aeson
 - http-conduit
 - text
