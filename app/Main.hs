@@ -21,5 +21,6 @@ main = do
   (Just helpMsg) <- CFG.lookup cfg "help_message"
   (Just repeatMsg) <- CFG.lookup cfg "repeat_message"
   (Just failMsg) <- CFG.lookup cfg "fail_message"
-  let botConfig = BotConfig {token = apiKey, helpMessage = helpMsg, repeatMessage = repeatMsg, failMessage = failMsg}
+  (Just noRepetitions) <- CFG.lookup cfg "default_no_repetitions"
+  let botConfig = BotConfig apiKey helpMsg repeatMsg failMsg noRepetitions
   runBot botConfig
