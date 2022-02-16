@@ -26,7 +26,7 @@ dependencies:
 - http-conduit
 - text
 - bytestring
-- configurator
+- yaml
 
 default-extensions:
 - OverloadedStrings

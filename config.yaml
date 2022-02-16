@@ -1,0 +1,10 @@
+bot:
+  token: ""
+  help_message: "help"
+  repeat_message: "repeat"
+  fail_message: "in case of fail"
+  number_of_responses: 1
+
+log:
+  path: ""
+  verbosity: info

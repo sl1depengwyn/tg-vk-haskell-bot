@@ -1,12 +1,6 @@
 module Main where
 
-import           Bot
-
-import qualified Data.Configurator       as CFG
-import qualified Data.Configurator.Types as CFG
-
-config :: IO CFG.Config
-config = CFG.load ["config.cfg"]
+import qualified Bot
 
 -- idk for now how to consrtuct this function [TODO]
 -- getFromConfig key = do
@@ -14,13 +8,6 @@ config = CFG.load ["config.cfg"]
 --   let value = case maybeValue of (Just value) -> pure value
 --                                  Nothing -> undefined
 --   pure value
+
 main :: IO ()
-main = do
-  cfg <- config
-  (Just apiKey) <- CFG.lookup cfg "token"
-  (Just helpMsg) <- CFG.lookup cfg "help_message"
-  (Just repeatMsg) <- CFG.lookup cfg "repeat_message"
-  (Just failMsg) <- CFG.lookup cfg "fail_message"
-  (Just noRepetitions) <- CFG.lookup cfg "default_no_repetitions"
-  let botConfig = BotConfig apiKey helpMsg repeatMsg failMsg noRepetitions
-  runBot botConfig
+main = Bot.main
