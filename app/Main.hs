@@ -1,6 +1,6 @@
 module Main where
 
-import qualified Bot
+import qualified Bot.Main
 
 -- idk for now how to consrtuct this function [TODO]
 -- getFromConfig key = do
@@ -10,4 +10,4 @@ import qualified Bot
 --   pure value
 
 main :: IO ()
-main = Bot.main
+main = Bot.Main.main

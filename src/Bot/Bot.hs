@@ -1,8 +1,8 @@
-module Bot where
+module Bot.Bot where
 
 import           Control.Monad              (MonadPlus (mzero), replicateM)
 import qualified Control.Monad.IO.Class     as MIO
-import qualified Data.Aeson as A
+import qualified Data.Aeson.Extended                 as A
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Char8      as BC
 import qualified Data.ByteString.Lazy       as L
@@ -12,30 +12,32 @@ import qualified Data.Map                   as Map
 import           Data.Maybe
 import qualified Data.Text                  as T
 import qualified Data.Text.Encoding         as TE
+import qualified Data.Yaml                  as Yaml
 import qualified GHC.Generics               as G
-import qualified Logger
+import qualified Bot.Logger as Logger
 import           Network.HTTP.Simple
 
-optionsJSON = A.defaultOptions  { A.fieldLabelModifier = A.camelTo2 '_' . tail,
-A.sumEncoding = A.UntaggedValue}
 
 data Config =
   Config
-    { cToken         :: BC.ByteString 
+    { cToken         :: T.Text
     , cHelpMessage   :: T.Text
     , cRepeatMessage :: T.Text
     , cFailMessage   :: T.Text
-    , cNoResponses :: Int
-    } deriving (Show, G.Generic)
+    , cNumberOfResponses   :: Int
+    }
+  deriving (Show, G.Generic)
 
 instance A.FromJSON Config where
-    parseJSON (A.Object o) = Config <$> o A..: "token"
-                                    <*> o A..: "help_message"
-                                    <*> o A..: "repeat_message"
-                                    <*> o A..: "fail_message"
-                                    <*> o A..: "number_of_responses"
+  parseJSON = A.withObject "FromJSON Bot.Bot.Config" $ \o -> Config
+        <$> o A..: "token"
+        <*> o A..: "help_message"
+        <*> o A..: "repeat_message"
+        <*> o A..: "fail_message"
+        <*> o A..: "number_of_responses"
 
-    parseJSON _             = mzero
+-- instance A.FromJSON Config where
+--   parseJSON = A.genericParseJSON A.customOptions
 
 data Handle =
   Handle
@@ -47,13 +49,41 @@ type ChatID = BC.ByteString
 
 type UserToRepeat = Map Int Int
 
+host :: BC.ByteString
+host = "api.telegram.org"
+
 buildRequest :: BC.ByteString -> BC.ByteString -> Query -> Request
 buildRequest host path query =
   setRequestHost host $
   setRequestQueryString query $ setRequestPath path $ setRequestSecure True $ setRequestPort 443 defaultRequest
 
-host :: BC.ByteString
-host = "api.telegram.org"
+replyKeyboard :: InlineKeyboard
+replyKeyboard =
+  InlineKeyboard
+    [[SimpleButton "1" "1", SimpleButton "2" "2"], [SimpleButton "3" "3", SimpleButton "4" "4", SimpleButton "5" "5"]]
+
+sendMessage :: T.Text -> Int -> T.Text -> Query -> IO BC.ByteString
+sendMessage apiKey userId method query = getResponseBody <$> httpBS (buildRequest host (TE.encodeUtf8 path) finalQuery)
+  where
+    path = mconcat ["/bot", apiKey, method]
+    senderId = (BC.pack . show) userId
+    chatId = ("chat_id", Just senderId)
+    finalQuery = chatId : query
+
+sendKeyboardMessage :: T.Text -> Int -> T.Text -> IO BC.ByteString
+sendKeyboardMessage apiKey userId repeatText = sendMessage apiKey userId "/sendMessage" query
+  where
+    query = [("text", Just (TE.encodeUtf8 repeatText)), ("reply_markup", Just (LC.toStrict (A.encode replyKeyboard)))]
+
+sendTextMessage :: T.Text -> T.Text -> Int -> IO BC.ByteString
+sendTextMessage apiKey message userId = sendMessage apiKey userId "/sendMessage" query
+  where
+    query = [("text", Just (TE.encodeUtf8 message))]
+
+sendSticker :: T.Text -> T.Text -> Int -> IO BC.ByteString
+sendSticker apiKey fileId userId = sendMessage apiKey userId "/sendSticker" query
+  where
+    query = [("sticker", Just (TE.encodeUtf8 fileId))]
 
 newtype User =
   User
@@ -61,7 +91,8 @@ newtype User =
     }
   deriving (Show, G.Generic)
 
-instance A.FromJSON User
+instance A.FromJSON User where
+  parseJSON = A.genericParseJSON A.customOptions
 
 newtype Sticker =
   Sticker
@@ -71,14 +102,18 @@ newtype Sticker =
 
 instance A.FromJSON Sticker
 
-newtype InlineKeyboard = InlineKeyboard {inline_keyboard :: [[KeyboardButton]]} deriving (Show, G.Generic)
+newtype InlineKeyboard =
+  InlineKeyboard
+    { inline_keyboard :: [[KeyboardButton]]
+    }
+  deriving (Show, G.Generic)
 
 instance A.ToJSON InlineKeyboard
 
 data KeyboardButton =
   SimpleButton
-    { buttonText :: T.Text
-    , buttonData :: T.Text
+    { bText :: T.Text
+    , bData :: T.Text
     }
   deriving (Show)
 
@@ -87,45 +122,44 @@ instance A.ToJSON KeyboardButton where
 
 data Message
   = TextMessage
-      { from :: User
-      , text :: T.Text
+      { mFrom :: User
+      , mText :: T.Text
       }
   | StickerMessage
-      { from    :: User
-      , sticker :: Sticker
+      { mFrom    :: User
+      , mSticker :: Sticker
       }
   | UnsupportedMessage
-      { from :: User
+      { mFrom :: User
       }
   deriving (Show, G.Generic)
 
 instance A.FromJSON Message where
-  parseJSON = A.genericParseJSON optionsJSON
+  parseJSON = A.genericParseJSON A.customOptions
 
 data CallbackQuery =
   CallbackQuery
-    { callbackFrom :: User
-    , callbackData :: String
+    { cFrom :: User
+    , cData :: String
     }
-  deriving (Show)
+  deriving (Show, G.Generic)
 
 instance A.FromJSON CallbackQuery where
-  parseJSON (A.Object o) = CallbackQuery <$> o A..: "from" <*> o A..: "data"
-  parseJSON _          = mzero
+  parseJSON = A.genericParseJSON A.customOptions
 
 data Update
   = UpdateWithMessage
-      { update_id :: Int
-      , message   :: Message
+      { uUpdateId :: Int
+      , uMessage  :: Message
       }
   | UpdateWithCallback
-      { update_id      :: Int
-      , callback_query :: CallbackQuery
+      { uUpdateId      :: Int
+      , uCallbackQuery :: CallbackQuery
       }
   deriving (Show, G.Generic)
 
 instance A.FromJSON Update where
-  parseJSON = A.genericParseJSON optionsJSON
+  parseJSON = A.genericParseJSON A.customOptions
 
 newtype UpdatesResponse =
   UpdatesResponse
@@ -135,49 +169,20 @@ newtype UpdatesResponse =
 
 instance A.FromJSON UpdatesResponse
 
-replyKeyboard :: InlineKeyboard
-replyKeyboard = InlineKeyboard
-    [[SimpleButton "1" "1", SimpleButton "2" "2"], [SimpleButton "3" "3", SimpleButton "4" "4", SimpleButton "5" "5"]]
-
-sendKeyboardMessage :: BC.ByteString -> Int -> T.Text -> IO BC.ByteString
-sendKeyboardMessage apiKey userId repeatText = getResponseBody <$> httpBS (buildRequest host path query)
-  where
-    path = mconcat ["/bot", apiKey, "/sendMessage"]
-    senderId = (BC.pack . show) userId
-    query =
-      [ ("chat_id", Just senderId)
-      , ("text", Just (TE.encodeUtf8 repeatText))
-      , ("reply_markup", Just (LC.toStrict (A.encode replyKeyboard)))
-      ]
-
-sendTextMessage :: BC.ByteString -> T.Text -> Int -> IO BC.ByteString
-sendTextMessage apiKey message userId = getResponseBody <$> httpBS (buildRequest host path query)
-  where
-    path = mconcat ["/bot", apiKey, "/sendMessage"]
-    senderId = (BC.pack . show) userId
-    query = [("chat_id", Just senderId), ("text", Just (TE.encodeUtf8 message))]
-
-sendSticker :: BC.ByteString -> T.Text -> Int -> IO BC.ByteString
-sendSticker apiKey fileId userId = getResponseBody <$> httpBS (buildRequest host path query)
-  where
-    path = mconcat ["/bot", apiKey, "/sendSticker"]
-    senderId = (BC.pack . show) userId
-    query = [("chat_id", Just senderId), ("sticker", Just (TE.encodeUtf8 fileId))]
-
-getUpdates :: Show a => BC.ByteString -> Maybe a -> IO (Either String [Update])
+getUpdates :: Show a => T.Text -> Maybe a -> IO (Either String [Update])
 getUpdates apiKey offset = do
   let path = mconcat ["/bot", apiKey, "/getUpdates"]
   let query = [("timeout", Just "25"), ("offset", BC.pack . show <$> offset)]
-  response <- httpBS $ buildRequest host path query
+  response <- httpBS $ buildRequest host (TE.encodeUtf8 path) query
   let responseBody = getResponseBody response
   let responseJson = A.eitherDecodeStrict responseBody :: Either String UpdatesResponse
   let updates = result <$> responseJson
   return updates
 
-replyTextMessage :: BC.ByteString -> UserToRepeat -> Message -> IO BC.ByteString
-replyTextMessage apiKey usersDB msg = sendTextMessage apiKey (text msg) senderId
+replyTextMessage :: T.Text -> UserToRepeat -> Message -> IO BC.ByteString
+replyTextMessage apiKey usersDB msg = sendTextMessage apiKey (mText msg) senderId
   where
-    (User senderId) = from msg
+    (User senderId) = mFrom msg
 
 replyMessage :: UserToRepeat -> Int -> Int -> (Int -> IO BC.ByteString) -> IO BC.ByteString
 replyMessage usersDB noRepetitions userId f =
@@ -214,7 +219,7 @@ longPolling config usersDB offset = do
   let lastUpdateId =
         if null updates
           then Nothing
-          else Just (update_id (last updates) + 1)
+          else Just (uUpdateId (last updates) + 1)
   let responses = processUpdates config usersDB updates
   let upToDateDB =
         if null responses
@@ -228,6 +233,3 @@ longPolling config usersDB offset = do
 runBot :: Config -> IO ()
 runBot config = longPolling config Map.empty Nothing
 
-
-main :: IO ()
-main = undefined

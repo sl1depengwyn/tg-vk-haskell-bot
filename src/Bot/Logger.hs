@@ -1,10 +1,8 @@
-module Logger where
+module Bot.Logger where
 
-import qualified Data.Aeson as A
+import qualified Data.Aeson.Extended as A
 import qualified GHC.Generics               as G
 import qualified Data.Text             as T
-
-optionsJSON = A.defaultOptions  { A.fieldLabelModifier = A.camelTo2 . tail }
 
 data Verbosity
   = Debug
@@ -26,11 +24,11 @@ data Config =
   Config
     { cPath      :: Maybe String
     , cVerbosity :: Maybe Verbosity
-    } deriving (Show)
+    } deriving (Show, G.Generic)
 
 instance A.FromJSON Config where
-  parseJSON = genericParseJSON optionsJSON
-
+  parseJSON = A.genericParseJSON A.customOptions 
+  
 newtype Handle =
   Handle
     { hConfig :: Config
