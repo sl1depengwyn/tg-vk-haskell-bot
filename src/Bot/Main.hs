@@ -14,10 +14,10 @@ data Config =
     { cBot    :: Bot.Config
     , cLogger :: Logger.Config
     }
-  deriving (G.Generic)
+  deriving (Show, G.Generic)
 
 instance A.FromJSON Config where
-  parseJSON (A.Object o) = Config <$> o A..: "bot" <*> o A..: "logger"
+  parseJSON = A.genericParseJSON A.customOptions
 
 main :: IO ()
 main = do
@@ -25,10 +25,10 @@ main = do
   progName <- getProgName
   case args of
     [configPath] -> run configPath
-    _            -> run "D:\\haskell\\bot\\config.yaml"
+    _            -> run "config.yaml"
 
 run :: FilePath -> IO ()
 run path = do
   errOrConfig <- Yaml.decodeFileEither path
-  config <- either (fail . show) pure errOrConfig
-  Bot.runBot config
+  Config bot logger <- either (fail . show) pure errOrConfig
+  Bot.runBot bot

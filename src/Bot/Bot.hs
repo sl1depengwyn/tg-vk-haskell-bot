@@ -1,8 +1,9 @@
 module Bot.Bot where
 
+import qualified Bot.Logger                 as Logger
 import           Control.Monad              (MonadPlus (mzero), replicateM)
 import qualified Control.Monad.IO.Class     as MIO
-import qualified Data.Aeson.Extended                 as A
+import qualified Data.Aeson.Extended        as A
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Char8      as BC
 import qualified Data.ByteString.Lazy       as L
@@ -14,30 +15,20 @@ import qualified Data.Text                  as T
 import qualified Data.Text.Encoding         as TE
 import qualified Data.Yaml                  as Yaml
 import qualified GHC.Generics               as G
-import qualified Bot.Logger as Logger
 import           Network.HTTP.Simple
-
 
 data Config =
   Config
-    { cToken         :: T.Text
-    , cHelpMessage   :: T.Text
-    , cRepeatMessage :: T.Text
-    , cFailMessage   :: T.Text
-    , cNumberOfResponses   :: Int
+    { cToken             :: T.Text
+    , cHelpMessage       :: T.Text
+    , cRepeatMessage     :: T.Text
+    , cFailMessage       :: T.Text
+    , cNumberOfResponses :: Int
     }
   deriving (Show, G.Generic)
 
 instance A.FromJSON Config where
-  parseJSON = A.withObject "FromJSON Bot.Bot.Config" $ \o -> Config
-        <$> o A..: "token"
-        <*> o A..: "help_message"
-        <*> o A..: "repeat_message"
-        <*> o A..: "fail_message"
-        <*> o A..: "number_of_responses"
-
--- instance A.FromJSON Config where
---   parseJSON = A.genericParseJSON A.customOptions
+  parseJSON = A.genericParseJSON A.customOptions
 
 data Handle =
   Handle
@@ -232,4 +223,3 @@ longPolling config usersDB offset = do
 
 runBot :: Config -> IO ()
 runBot config = longPolling config Map.empty Nothing
-
