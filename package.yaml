@@ -27,6 +27,8 @@ dependencies:
 - text
 - bytestring
 - yaml
+- mtl
+- time
 
 default-extensions:
 - OverloadedStrings

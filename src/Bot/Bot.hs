@@ -16,6 +16,7 @@ import qualified Data.Text.Encoding         as TE
 import qualified Data.Yaml                  as Yaml
 import qualified GHC.Generics               as G
 import           Network.HTTP.Simple
+import Control.Monad.State
 
 data Config =
   Config
@@ -36,9 +37,12 @@ data Handle =
     , hLogger :: Logger.Handle
     }
 
-type ChatID = BC.ByteString
+withHandle :: Config -> Logger.Handle -> (Handle -> IO ()) -> IO ()
+withHandle conf lHandle f = f $ Handle {hConfig = conf, hLogger = lHandle}
 
-type UserToRepeat = Map Int Int
+type MapUserToRepeat = Map Int Int
+
+type BotM = State MapUserToRepeat
 
 host :: BC.ByteString
 host = "api.telegram.org"
@@ -170,18 +174,18 @@ getUpdates apiKey offset = do
   let updates = result <$> responseJson
   return updates
 
-replyTextMessage :: T.Text -> UserToRepeat -> Message -> IO BC.ByteString
+replyTextMessage :: T.Text -> MapUserToRepeat -> Message -> IO BC.ByteString
 replyTextMessage apiKey usersDB msg = sendTextMessage apiKey (mText msg) senderId
   where
     (User senderId) = mFrom msg
 
-replyMessage :: UserToRepeat -> Int -> Int -> (Int -> IO BC.ByteString) -> IO BC.ByteString
+replyMessage :: MapUserToRepeat -> Int -> Int -> (Int -> IO BC.ByteString) -> IO BC.ByteString
 replyMessage usersDB noRepetitions userId f =
   case Map.lookup userId usersDB of
     (Just noReps) -> mconcat <$> replicateM noReps (f userId)
     Nothing       -> mconcat <$> replicateM noRepetitions (f userId)
 
-processMessage :: Config -> UserToRepeat -> Message -> IO BC.ByteString
+processMessage :: Config -> MapUserToRepeat -> Message -> IO BC.ByteString
 processMessage (Config api helpMsg repeatMsg _ noRepetitions) usersDB msg@(TextMessage (User userId) text) =
   case text of
     "/help" -> sendTextMessage api helpMsg userId
@@ -192,17 +196,17 @@ processMessage (Config api _ _ _ noRepetitions) usersDB (StickerMessage (User us
 processMessage (Config api _ _ failMsg _) usersDB (UnsupportedMessage (User userId)) =
   sendTextMessage api failMsg userId
 
-processCallback :: UserToRepeat -> CallbackQuery -> UserToRepeat
+processCallback :: MapUserToRepeat -> CallbackQuery -> MapUserToRepeat
 processCallback usersDB (CallbackQuery (User usrId) amount) = Map.insert usrId (read amount) usersDB
 
-processUpdates :: Config -> UserToRepeat -> [Update] -> [(UserToRepeat, IO (Maybe BC.ByteString))]
+processUpdates :: Config -> MapUserToRepeat -> [Update] -> [(MapUserToRepeat, IO (Maybe BC.ByteString))]
 processUpdates config usersDB ((UpdateWithMessage _ msg):others) =
   (usersDB, Just <$> processMessage config usersDB msg) : processUpdates config usersDB others
 processUpdates config usersDB ((UpdateWithCallback _ callback):others) =
   (processCallback usersDB callback, pure Nothing) : processUpdates config usersDB others
 processUpdates config usersDB [] = []
 
-longPolling :: Config -> UserToRepeat -> Maybe Int -> IO ()
+longPolling :: Config -> MapUserToRepeat -> Maybe Int -> IO ()
 longPolling config usersDB offset = do
   let (Config apiKey _ _ _ _) = config
   eitherUpdates <- getUpdates apiKey offset
@@ -221,5 +225,26 @@ longPolling config usersDB offset = do
   mapM_ (maybe (BC.putStrLn "map updated") BC.putStrLn) responseBodies
   longPolling config upToDateDB lastUpdateId
 
-runBot :: Config -> IO ()
-runBot config = longPolling config Map.empty Nothing
+runBot :: Handle -> IO ()
+runBot handle = longPolling (hConfig handle) Map.empty Nothing
+
+
+
+longPolling' :: Handle -> BotM () -> IO ()
+longPolling' botH usersDB = do
+  let (Config apiKey _ _ _ _) = config
+  eitherUpdates <- getUpdates apiKey offset
+  let (Right updates) = eitherUpdates
+  let lastUpdateId =
+        if null updates
+          then Nothing
+          else Just (uUpdateId (last updates) + 1)
+  let responses = processUpdates config usersDB updates
+  let upToDateDB =
+        if null responses
+          then usersDB
+          else fst $ last responses
+  let responseBodiesIO = mapM snd responses
+  responseBodies <- responseBodiesIO
+  mapM_ (maybe (BC.putStrLn "map updated") BC.putStrLn) responseBodies
+  longPolling config upToDateDB lastUpdateId

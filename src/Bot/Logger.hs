@@ -4,6 +4,7 @@ import qualified Data.Aeson.Extended as A
 import           Data.Char           (toUpper)
 import           Data.Maybe          (fromMaybe)
 import qualified Data.Text           as T
+import           Data.Time.Extended
 import qualified GHC.Generics        as G
 import           Prelude             hiding (error, log)
 
@@ -49,8 +50,9 @@ withHandle :: Config -> (Handle -> IO a) -> IO a
 withHandle config f = f $ Handle {hConfig = config}
 
 pushLogStrLn :: Maybe FilePath -> Verbosity -> String -> IO ()
-pushLogStrLn (Just path) v logMsg = appendFile path (mconcat ["[", map toUpper (show v), "]: ", logMsg, "\n"])
-pushLogStrLn Nothing v logMsg = putStrLn $ mconcat ["[", map toUpper (show v), "]: ", logMsg]
+pushLogStrLn (Just path) v logMsg =
+  nowFormatted >>= (\time -> appendFile path (mconcat ["[", show v, "] ", time, ": ", logMsg, "\n"]))
+pushLogStrLn Nothing v logMsg = nowFormatted >>= (\time -> putStrLn $ mconcat ["[", show v, "] ", time, ": ", logMsg])
 
 log :: Handle -> Verbosity -> String -> IO ()
 log (Handle config) v x

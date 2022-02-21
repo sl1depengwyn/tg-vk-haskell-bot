@@ -31,4 +31,5 @@ run :: FilePath -> IO ()
 run path = do
   errOrConfig <- Yaml.decodeFileEither path
   Config bot logger <- either (fail . show) pure errOrConfig
-  Bot.runBot bot
+  Logger.withHandle logger (\hLogger -> 
+    Bot.withHandle bot hLogger Bot.runBot)
