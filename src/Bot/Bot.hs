@@ -19,9 +19,27 @@ import qualified Data.Yaml                  as Yaml
 import qualified GHC.Generics               as G
 import           Network.HTTP.Simple
 
+data Host
+  = Vk
+      { hUrl :: BC.ByteString
+      }
+  | Tg
+      { hUrl :: BC.ByteString
+      }
+  deriving (Show)
+
+instance A.FromJSON Host where
+  parseJSON =
+    A.withText "FromJSON Bot.Host" $ \t ->
+      case t of
+        "vk" -> pure Vk {hUrl = "api.vk.com"}
+        "tg" -> pure Tg {hUrl = "api.telegram.org"}
+        _    -> fail $ "Unknown host: " ++ T.unpack t
+
 data Config =
   Config
-    { cToken             :: T.Text
+    { cHost              :: Host
+    , cToken             :: T.Text
     , cHelpMessage       :: T.Text
     , cRepeatMessage     :: T.Text
     , cFailMessage       :: T.Text
@@ -49,41 +67,21 @@ data BotState =
 withHandle :: Config -> Logger.Handle -> (Handle -> IO ()) -> IO ()
 withHandle conf lHandle f = f $ Handle {hConfig = conf, hLogger = lHandle}
 
-host :: BC.ByteString
-host = "api.telegram.org"
+runBot :: Handle -> IO ()
+runBot botH = evalStateT (longPolling botH) (BotState {sUsers = Map.empty, sOffset = Nothing})
 
-buildRequest :: BC.ByteString -> BC.ByteString -> Query -> Request
-buildRequest host path query =
-  setRequestHost host $
-  setRequestQueryString query $ setRequestPath path $ setRequestSecure True $ setRequestPort 443 defaultRequest
-
-sendMessage :: T.Text -> Int -> T.Text -> Query -> IO BC.ByteString
-sendMessage apiKey userId method query = getResponseBody <$> httpBS (buildRequest host (TE.encodeUtf8 path) finalQuery)
-  where
-    path = mconcat ["/bot", apiKey, method]
-    senderId = (BC.pack . show) userId
-    chatId = ("chat_id", Just senderId)
-    finalQuery = chatId : query
-
-sendKeyboardMessage :: T.Text -> Int -> T.Text -> IO BC.ByteString
-sendKeyboardMessage apiKey userId repeatText = sendMessage apiKey userId "/sendMessage" query
-  where
-    query = [("text", Just (TE.encodeUtf8 repeatText)), ("reply_markup", Just (LC.toStrict (A.encode replyKeyboard)))]
-
-sendTextMessage :: T.Text -> T.Text -> Int -> IO BC.ByteString
-sendTextMessage apiKey message userId = sendMessage apiKey userId "/sendMessage" query
-  where
-    query = [("text", Just (TE.encodeUtf8 message))]
-
-sendSticker :: T.Text -> T.Text -> Int -> IO BC.ByteString
-sendSticker apiKey fileId userId = sendMessage apiKey userId "/sendSticker" query
-  where
-    query = [("sticker", Just (TE.encodeUtf8 fileId))]
-
-replyKeyboard :: InlineKeyboard
-replyKeyboard =
-  InlineKeyboard
-    [[SimpleButton "1" "1", SimpleButton "2" "2"], [SimpleButton "3" "3", SimpleButton "4" "4", SimpleButton "5" "5"]]
+longPolling :: Handle -> StateT BotState IO ()
+longPolling botH =
+  forever $ do
+    st <- get
+    let apiKey = (cToken . hConfig) botH
+    let offset = sOffset st
+    eitherUpdates <- liftIO $ getUpdates botH offset
+    case eitherUpdates of
+      (Right updates) -> do
+        unless (null updates) (put st {sOffset = Just (uUpdateId (last updates) + 1)})
+        mapM_ (processUpdate botH) updates
+      (Left err) -> undefined
 
 newtype User =
   User
@@ -102,24 +100,6 @@ newtype Sticker =
 
 instance A.FromJSON Sticker where
   parseJSON = A.genericParseJSON A.customOptions
-
-newtype InlineKeyboard =
-  InlineKeyboard
-    { inline_keyboard :: [[KeyboardButton]]
-    }
-  deriving (Show, G.Generic)
-
-instance A.ToJSON InlineKeyboard
-
-data KeyboardButton =
-  SimpleButton
-    { bText :: T.Text
-    , bData :: T.Text
-    }
-  deriving (Show)
-
-instance A.ToJSON KeyboardButton where
-  toJSON (SimpleButton buttonText buttonData) = A.object ["text" A..= buttonText, "callback_data" A..= buttonData]
 
 data Message
   = TextMessage
@@ -170,8 +150,10 @@ newtype UpdatesResponse =
 
 instance A.FromJSON UpdatesResponse
 
-getUpdates :: T.Text -> Maybe Int -> IO (Either String [Update])
-getUpdates apiKey offset = do
+getUpdates :: Handle -> Maybe Int -> IO (Either String [Update])
+getUpdates botH offset = do
+  let host = (hUrl . cHost . hConfig) botH
+  let apiKey = (cToken . hConfig) botH
   let path = mconcat ["/bot", apiKey, "/getUpdates"]
   let query = [("timeout", Just "25"), ("offset", BC.pack . show <$> offset)]
   response <- httpBS $ buildRequest host (TE.encodeUtf8 path) query
@@ -180,132 +162,99 @@ getUpdates apiKey offset = do
   let updates = result <$> responseJson
   return updates
 
-replyTextMessage :: T.Text -> MapUserToRepeat -> Message -> IO BC.ByteString
-replyTextMessage apiKey usersDB msg = sendTextMessage apiKey (mText msg) senderId
-  where
-    (User senderId) = mFrom msg
+buildRequest :: BC.ByteString -> BC.ByteString -> Query -> Request
+buildRequest host path query =
+  setRequestHost host $
+  setRequestQueryString query $ setRequestPath path $ setRequestSecure True $ setRequestPort 443 defaultRequest
 
-replyMessage :: MapUserToRepeat -> Int -> Int -> (Int -> IO BC.ByteString) -> IO BC.ByteString
-replyMessage usersDB noRepetitions userId f =
-  case Map.lookup userId usersDB of
-    (Just noReps) -> mconcat <$> replicateM noReps (f userId)
-    Nothing       -> mconcat <$> replicateM noRepetitions (f userId)
+newtype InlineKeyboard =
+  InlineKeyboard
+    { inline_keyboard :: [[KeyboardButton]]
+    }
+  deriving (Show, G.Generic)
 
-processCallback :: MapUserToRepeat -> CallbackQuery -> MapUserToRepeat
-processCallback usersDB (CallbackQuery (User usrId) amount) = Map.insert usrId (read amount) usersDB
+instance A.ToJSON InlineKeyboard
 
-processUpdates :: Config -> MapUserToRepeat -> [Update] -> [(MapUserToRepeat, IO (Maybe BC.ByteString))]
-processUpdates config usersDB ((UpdateWithMessage _ msg):others) =
-  (usersDB, Just <$> processMessage config usersDB msg) : processUpdates config usersDB others
-processUpdates config usersDB ((UpdateWithCallback _ callback):others) =
-  (processCallback usersDB callback, pure Nothing) : processUpdates config usersDB others
-processUpdates config usersDB [] = []
+data KeyboardButton =
+  SimpleButton
+    { bText :: T.Text
+    , bData :: T.Text
+    }
+  deriving (Show)
 
-longPolling :: Config -> MapUserToRepeat -> Maybe Int -> IO ()
-longPolling config usersDB offset = do
-  let (Config apiKey _ _ _ _) = config
-  eitherUpdates <- getUpdates apiKey offset
-  let (Right updates) = eitherUpdates
-  let lastUpdateId =
-        if null updates
-          then Nothing
-          else Just (uUpdateId (last updates) + 1)
-  let responses = processUpdates config usersDB updates
-  let upToDateDB =
-        if null responses
-          then usersDB
-          else fst $ last responses
-  let responseBodiesIO = mapM snd responses
-  responseBodies <- responseBodiesIO
-  mapM_ (maybe (BC.putStrLn "map updated") BC.putStrLn) responseBodies
-  longPolling config upToDateDB lastUpdateId
+instance A.ToJSON KeyboardButton where
+  toJSON (SimpleButton buttonText buttonData) = A.object ["text" A..= buttonText, "callback_data" A..= buttonData]
 
--- runBot :: Handle -> IO ()
--- runBot handle = longPolling (hConfig handle) Map.empty Nothing
-runBot botH = evalStateT (longPolling' botH) (BotState {sUsers = Map.empty, sOffset = Nothing})
-
-processMessage :: Config -> MapUserToRepeat -> Message -> IO BC.ByteString
-processMessage (Config api helpMsg repeatMsg _ noRepetitions) usersDB msg@(TextMessage (User userId) text) =
-  case text of
-    "/help" -> sendTextMessage api helpMsg userId
-    "/repeat" -> sendKeyboardMessage api userId repeatMsg
-    _ -> replyMessage usersDB noRepetitions userId (sendTextMessage api text)
-processMessage (Config api _ _ _ noRepetitions) usersDB (StickerMessage (User userId) (Sticker fileId)) =
-  replyMessage usersDB noRepetitions userId (sendSticker api fileId)
-processMessage (Config api _ _ failMsg _) usersDB (UnsupportedMessage (User userId)) =
-  sendTextMessage api failMsg userId
+replyKeyboard :: InlineKeyboard
+replyKeyboard =
+  InlineKeyboard
+    [[SimpleButton "1" "1", SimpleButton "2" "2"], [SimpleButton "3" "3", SimpleButton "4" "4", SimpleButton "5" "5"]]
 
 type ReceiverId = Int
 
-sendMessage' :: Handle -> ReceiverId -> T.Text -> Query -> IO (Response BC.ByteString)
-sendMessage' botH usrId method query = httpBS (buildRequest host (TE.encodeUtf8 path) finalQuery)
+sendMessage :: Handle -> ReceiverId -> T.Text -> Query -> IO (Response BC.ByteString)
+sendMessage botH usrId method query = httpBS (buildRequest host (TE.encodeUtf8 path) finalQuery)
   where
+    host = (hUrl . cHost . hConfig) botH
     apiKey = (cToken . hConfig) botH
     path = mconcat ["/bot", apiKey, method]
     senderId = (BC.pack . show) usrId
     chatId = ("chat_id", Just senderId)
     finalQuery = chatId : query
 
-sendKeyboardMessage' :: Handle -> ReceiverId -> IO (Response BC.ByteString)
-sendKeyboardMessage' botH usrId = sendMessage' botH usrId "/sendMessage" query
+sendKeyboardMessage :: Handle -> ReceiverId -> IO (Response BC.ByteString)
+sendKeyboardMessage botH usrId = sendMessage botH usrId "/sendMessage" query
   where
     repeatText = (cRepeatMessage . hConfig) botH
     query = [("text", Just (TE.encodeUtf8 repeatText)), ("reply_markup", Just (LC.toStrict (A.encode replyKeyboard)))]
 
-sendTextMessage' :: Handle -> T.Text -> ReceiverId -> IO (Response BC.ByteString)
-sendTextMessage' botH message usrId = sendMessage' botH usrId "/sendMessage" query
+sendTextMessage :: Handle -> T.Text -> ReceiverId -> IO (Response BC.ByteString)
+sendTextMessage botH message usrId = sendMessage botH usrId "/sendMessage" query
   where
     query = [("text", Just (TE.encodeUtf8 message))]
 
 sendHelpMessage :: Handle -> ReceiverId -> IO (Response BC.ByteString)
-sendHelpMessage botH = sendTextMessage' botH helpText
+sendHelpMessage botH = sendTextMessage botH helpText
   where
     helpText = (cHelpMessage . hConfig) botH
 
 sendFailMessage :: Handle -> ReceiverId -> IO (Response BC.ByteString)
-sendFailMessage botH = sendTextMessage' botH failText
+sendFailMessage botH = sendTextMessage botH failText
   where
     failText = (cFailMessage . hConfig) botH
 
-sendSticker' :: Handle -> T.Text -> ReceiverId -> IO (Response BC.ByteString)
-sendSticker' botH fileId usrId = sendMessage' botH usrId "/sendSticker" query
+sendSticker :: Handle -> T.Text -> ReceiverId -> IO (Response BC.ByteString)
+sendSticker botH fileId usrId = sendMessage botH usrId "/sendSticker" query
   where
     query = [("sticker", Just (TE.encodeUtf8 fileId))]
 
-replyMessage' ::
-     Handle -> ReceiverId -> (ReceiverId -> IO (Response BC.ByteString)) -> StateT BotState IO [Response BC.ByteString]
-replyMessage' botH usrId sendFunction = do
+replyMessage ::
+     Handle -> ReceiverId -> IO (Response BC.ByteString) -> StateT BotState IO [Response BC.ByteString]
+replyMessage botH usrId sendFunction = do
   st <- get
   let defNoReps = (cNumberOfResponses . hConfig) botH
   case Map.lookup usrId (sUsers st) of
-    (Just noReps) -> liftIO $ replicateM noReps (sendFunction usrId)
-    Nothing       -> liftIO $ replicateM defNoReps (sendFunction usrId)
+    (Just noReps) -> liftIO $ replicateM noReps (sendFunction)
+    Nothing       -> liftIO $ replicateM defNoReps (sendFunction)
 
-processMessage' :: Handle -> Message -> StateT BotState IO ()
-processMessage' botH (TextMessage us txt) = do
+processMessage :: Handle -> Message -> StateT BotState IO ()
+processMessage botH (TextMessage us txt) = do
   let usrId = uId us
   case txt of
     "/help"   -> void $ liftIO $ sendHelpMessage botH usrId
-    "/repeat" -> void $ liftIO $ sendKeyboardMessage' botH usrId
-    txt'      -> void $ replyMessage' botH usrId (sendTextMessage' botH txt')
+    "/repeat" -> void $ liftIO $ sendKeyboardMessage botH usrId
+    txt'      -> void $ replyMessage botH usrId (sendTextMessage botH txt' usrId)
   return ()
-processMessage' botH (StickerMessage us st) =
+processMessage botH (StickerMessage us st) =
   let usrId = uId us
       fileId = sFileId st
-   in void $ replyMessage' botH usrId (sendSticker' botH fileId)
-processMessage' botH (UnsupportedMessage us) =
+   in void $ replyMessage botH usrId (sendSticker botH fileId usrId)
+processMessage botH (UnsupportedMessage us) =
   let usrId = uId us
    in liftIO $ void (sendFailMessage botH usrId)
 
-processUpdates' :: Config -> MapUserToRepeat -> [Update] -> [(MapUserToRepeat, IO (Maybe BC.ByteString))]
-processUpdates' config usersDB ((UpdateWithMessage _ msg):others) =
-  (usersDB, Just <$> processMessage config usersDB msg) : processUpdates config usersDB others
-processUpdates' config usersDB ((UpdateWithCallback _ callback):others) =
-  (processCallback usersDB callback, pure Nothing) : processUpdates config usersDB others
-processUpdates' config usersDB [] = []
-
-processCallback' :: Handle -> CallbackQuery -> StateT BotState IO ()
-processCallback' botH (CallbackQuery (User usrId) reps) = do
+processCallback :: Handle -> CallbackQuery -> StateT BotState IO ()
+processCallback botH (CallbackQuery (User usrId) reps) = do
   st <- get
   let usersToReps = sUsers st
   let newMap = Map.insert usrId (read reps) usersToReps
@@ -313,19 +262,5 @@ processCallback' botH (CallbackQuery (User usrId) reps) = do
   put newState
 
 processUpdate :: Handle -> Update -> StateT BotState IO ()
-processUpdate botH (UpdateWithMessage _ msg) = processMessage' botH msg
-processUpdate botH (UpdateWithCallback _ cb) = processCallback' botH cb
-
---longPolling' :: Handle -> BotM () -> IO ()
-longPolling' :: Handle -> StateT BotState IO ()
-longPolling' botH =
-  forever $ do
-    st <- get
-    let apiKey = (cToken . hConfig) botH
-    let offset = sOffset st
-    eitherUpdates <- liftIO $ getUpdates apiKey offset
-    case eitherUpdates of
-      (Right updates) -> do
-        unless (null updates) (put st {sOffset = Just (uUpdateId (last updates) + 1)})
-        mapM_ (processUpdate botH) updates
-      (Left err) -> undefined
+processUpdate botH (UpdateWithMessage _ msg) = processMessage botH msg
+processUpdate botH (UpdateWithCallback _ cb) = processCallback botH cb

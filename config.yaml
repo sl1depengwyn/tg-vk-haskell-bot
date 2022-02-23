@@ -1,10 +1,13 @@
+
 bot:
+  # use eiher vk or tg in case you are using telegram bot or vk bot respectively
+  host: tg
   token: ""
   help_message: "help"
   repeat_message: "repeat"
   fail_message: "in case of fail"
   number_of_responses: 1
 
-log:
-  path: ""
+logger:
+  path: "asd"
   verbosity: info
