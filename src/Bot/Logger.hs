@@ -51,8 +51,8 @@ withHandle config f = f $ Handle {hConfig = config}
 
 pushLogStrLn :: Maybe FilePath -> Verbosity -> String -> IO ()
 pushLogStrLn (Just path) v logMsg =
-  nowFormatted >>= (\time -> appendFile path (mconcat ["[", show v, "] ", time, ": ", logMsg, "\n"]))
-pushLogStrLn Nothing v logMsg = nowFormatted >>= (\time -> putStrLn $ mconcat ["[", show v, "] ", time, ": ", logMsg])
+  nowFormatted >>= (\time -> appendFile path (mconcat ["[", time, "] ", "[", show v, "]", ": ", logMsg, "\n"]))
+pushLogStrLn Nothing v logMsg = nowFormatted >>= (\time -> putStrLn $ mconcat ["[", time, "] ", "[", show v, "]", ": ", logMsg])
 
 log :: Handle -> Verbosity -> String -> IO ()
 log (Handle config) v x

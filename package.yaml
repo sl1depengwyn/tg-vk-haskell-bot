@@ -29,6 +29,7 @@ dependencies:
 - yaml
 - mtl
 - time
+- vector
 
 default-extensions:
 - OverloadedStrings

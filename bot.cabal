@@ -28,6 +28,8 @@ library
       Bot.Bot
       Bot.Logger
       Bot.Main
+      Bot.Tg
+      Bot.Vk
       Data.Aeson.Extended
       Data.Time.Extended
   other-modules:
@@ -46,6 +48,7 @@ library
     , mtl
     , text
     , time
+    , vector
     , yaml
   default-language: Haskell2010
 
@@ -69,6 +72,7 @@ executable bot-exe
     , mtl
     , text
     , time
+    , vector
     , yaml
   default-language: Haskell2010
 
@@ -93,5 +97,6 @@ test-suite bot-test
     , mtl
     , text
     , time
+    , vector
     , yaml
   default-language: Haskell2010
