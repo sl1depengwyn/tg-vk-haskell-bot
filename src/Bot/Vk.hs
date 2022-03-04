@@ -19,7 +19,6 @@ import qualified Data.Text.Encoding         as T
 
 import qualified Bot.Bot                    as Bot
 import qualified Data.Vector                as V
---import qualified Data.Yaml                  as Yaml
 import qualified GHC.Generics               as G
 import           Network.HTTP.Simple
 
@@ -28,7 +27,7 @@ type MapUserToRepeat = Map Int Int
 data BotState =
   BotState
     { sUsers  :: MapUserToRepeat
-    , sOffset :: Maybe Int
+    , sTs     :: String
     , sKey    :: T.Text
     , sServer :: T.Text
     }
@@ -38,13 +37,13 @@ longPolling botH =
   forever $ do
     st <- get
     let apiKey = (Bot.cToken . Bot.hConfig) botH
-    let offset = sOffset st
+    let ts = sTs st
     let logH = Bot.hLogger botH
-    eitherUpdates <- liftIO $ getUpdates botH offset
+    eitherUpdates <- getUpdates botH ts
     case eitherUpdates of
-      (Right updates) -> do
-        unless (null updates) (put st {sOffset = Just (uUpdateId (last updates) + 1)})
-        mapM_ (processUpdate botH) updates
+      (Right updatesResponse) -> do
+        put st {sTs = uTs updatesResponse}
+        mapM_ (processUpdate botH) (uUpdates updatesResponse)
       (Left err) -> liftIO $ Logger.error logH err
 
 type UserId = Int
@@ -64,9 +63,9 @@ data Message
   deriving (Show, G.Generic)
 
 createMessage :: UserId -> T.Text -> [Maybe Int] -> Message
-createMessage from "" [] = UnsupportedMessage from
+createMessage from "" []             = UnsupportedMessage from
 createMessage from "" [Just sticker] = StickerMessage from sticker
-createMessage from txt _ = TextMessage from txt
+createMessage from txt _             = TextMessage from txt
 
 parseSticker :: A.Value -> Parser (Maybe Int)
 parseSticker (A.Object obj) = do
@@ -77,18 +76,21 @@ parseSticker (A.Object obj) = do
 parseSticker _ = mzero
 
 instance A.FromJSON Message where
-  parseJSON = A.withObject "Bot.Vk.Message" (\obj -> do
-    from <- obj A..: "from_id"
-    txt <- obj A..: "text"
-    attachements <- obj A..: "attachments"
-    parsedStickers <- mapM parseSticker attachements
-    let stickers = filter isJust parsedStickers
-    pure $ createMessage from txt stickers)
+  parseJSON =
+    A.withObject
+      "Bot.Vk.Message"
+      (\obj -> do
+         from <- obj A..: "from_id"
+         txt <- obj A..: "text"
+         attachements <- obj A..: "attachments"
+         parsedStickers <- mapM parseSticker attachements
+         let stickers = filter isJust parsedStickers
+         pure $ createMessage from txt stickers)
 
 data CallbackQuery =
   CallbackQuery
-    { cFrom :: UserId
-    , cData :: String
+    { cUserId :: UserId
+    , cPayload :: Int
     }
   deriving (Show, G.Generic)
 
@@ -97,27 +99,33 @@ instance A.FromJSON CallbackQuery where
 
 data Update
   = UpdateWithMessage
-      { uUpdateId :: Int
-      , uMessage  :: Message
+      { uMessage :: Message
       }
   | UpdateWithCallback
-      { uUpdateId      :: Int
-      , uCallbackQuery :: CallbackQuery
+      { uCallbackQuery :: CallbackQuery
       }
+  | UnsupportedUpdate
   deriving (Show, G.Generic)
 
 instance A.FromJSON Update where
-  parseJSON = A.genericParseJSON A.customOptions
+  parseJSON = A.withObject "Bot.Vk.Update" (\obj -> do
+         type' <- obj A..: "type" :: Parser T.Text
+         case type' of
+           "message_new"   -> UpdateWithMessage <$> ((obj A..: "object") >>= (A..: "message"))
+           "message_event" -> UpdateWithCallback <$> obj A..: "object"
+           unsupportedType -> pure UnsupportedUpdate)
 
-newtype UpdatesResponse =
+data UpdatesResponse =
   UpdatesResponse
-    { result :: [Update]
+    { uUpdates :: [Update]
+    , uTs      :: String
     }
   deriving (Show, G.Generic)
 
-instance A.FromJSON UpdatesResponse
+instance A.FromJSON UpdatesResponse where
+  parseJSON = A.genericParseJSON A.customOptions
 
-getUpdates :: Bot.Handle -> Maybe Int -> IO (Either String [Update])
+getUpdates :: Bot.Handle -> Maybe Int -> StateT BotState IO (Either String UpdatesResponse)
 getUpdates botH offset = do
   let host = (Bot.hUrl . Bot.cHost . Bot.hConfig) botH
   let apiKey = (Bot.cToken . Bot.hConfig) botH
@@ -128,7 +136,7 @@ getUpdates botH offset = do
   let responseBody = getResponseBody response
   Logger.debug (Bot.hLogger botH) ((T.unpack . T.decodeUtf8) responseBody)
   let updates = A.eitherDecodeStrict responseBody
-  pure $ result <$> updates
+  pure updates
 
 buildRequest :: BC.ByteString -> BC.ByteString -> Query -> Request
 buildRequest host path query =
@@ -223,13 +231,13 @@ processCallback botH (CallbackQuery usrId reps) = do
   st <- get
   let usersToReps = sUsers st
   let logH = Bot.hLogger botH
-  let newMap = Map.insert usrId (read reps) usersToReps
+  let newMap = Map.insert usrId reps usersToReps
   let logMsg =
-        mconcat ["update in user-repeats map: for ", show usrId, " ", show $ Map.lookup usrId usersToReps, " ➔ ", reps]
+        mconcat ["update in user-repeats map: for ", show usrId, " ", show $ Map.lookup usrId usersToReps, " ➔ ", show reps]
   liftIO $ Logger.info logH logMsg
   let newState = st {sUsers = newMap}
   put newState
 
 processUpdate :: Bot.Handle -> Update -> StateT BotState IO ()
-processUpdate botH (UpdateWithMessage _ msg) = processMessage botH msg
-processUpdate botH (UpdateWithCallback _ cb) = processCallback botH cb
+processUpdate botH (UpdateWithMessage msg) = processMessage botH msg
+processUpdate botH (UpdateWithCallback cb) = processCallback botH cb
