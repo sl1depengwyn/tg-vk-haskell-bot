@@ -42,6 +42,7 @@ data Config =
   Config
     { cHost              :: Host
     , cToken             :: T.Text
+    , cGroupId :: Maybe T.Text 
     , cHelpMessage       :: T.Text
     , cRepeatMessage     :: T.Text
     , cFailMessage       :: T.Text

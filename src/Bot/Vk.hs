@@ -21,15 +21,31 @@ import qualified Bot.Bot                    as Bot
 import qualified Data.Vector                as V
 import qualified GHC.Generics               as G
 import           Network.HTTP.Simple
+import System.Exit (exitFailure)
+
+apiVersion :: BC.ByteString
+apiVersion = "5.131"
 
 type MapUserToRepeat = Map Int Int
+
+data SessionParams = SessionParams {
+  sKey :: T.Text
+, sServer :: T.Text
+, sTs :: T.Text
+} deriving Show
+
+instance A.FromJSON SessionParams where
+  parseJSON = A.withObject "Bot.Vk.SessionParams" (\obj ->do
+    o <- obj A..: "response"
+    key <- o A..: "key"
+    server <- o A..: "server"
+    ts <- o A..: "ts"
+    pure $ SessionParams {sKey = key, sServer = server, sTs = ts})
 
 data BotState =
   BotState
     { sUsers  :: MapUserToRepeat
-    , sTs     :: String
-    , sKey    :: T.Text
-    , sServer :: T.Text
+    , sSessionParams :: SessionParams
     }
 
 longPolling :: Bot.Handle -> StateT BotState IO ()
@@ -37,12 +53,13 @@ longPolling botH =
   forever $ do
     st <- get
     let apiKey = (Bot.cToken . Bot.hConfig) botH
-    let ts = sTs st
+    let sessionParams = sSessionParams st
+    let ts = sTs sessionParams
     let logH = Bot.hLogger botH
-    eitherUpdates <- getUpdates botH ts
+    eitherUpdates <- getUpdates botH
     case eitherUpdates of
       (Right updatesResponse) -> do
-        put st {sTs = uTs updatesResponse}
+        put st {sSessionParams = sessionParams {sTs = uTs updatesResponse}}
         mapM_ (processUpdate botH) (uUpdates updatesResponse)
       (Left err) -> liftIO $ Logger.error logH err
 
@@ -118,30 +135,46 @@ instance A.FromJSON Update where
 data UpdatesResponse =
   UpdatesResponse
     { uUpdates :: [Update]
-    , uTs      :: String
+    , uTs      :: T.Text
     }
   deriving (Show, G.Generic)
 
 instance A.FromJSON UpdatesResponse where
   parseJSON = A.genericParseJSON A.customOptions
 
-getUpdates :: Bot.Handle -> Maybe Int -> StateT BotState IO (Either String UpdatesResponse)
-getUpdates botH offset = do
+
+getSessionParams :: Bot.Handle -> StateT BotState IO ()
+getSessionParams botH = do
+  st <- get
+  let host = (Bot.hUrl . Bot.cHost . Bot.hConfig) botH
+  let apiKey = (Bot.cToken . Bot.hConfig) botH
+  let mbGroupId = (Bot.cGroupId . Bot.hConfig) botH
+  liftIO $ when (isNothing mbGroupId) (putStrLn "No group id specified in config!" >> exitFailure)
+  let (Just groupId) = mbGroupId
+  let path = "/method/gropus.getLongPollServer"
+  let query = [("access_token", Just $ T.encodeUtf8 apiKey), ("v", Just apiVersion), ("group_id", Just $ T.encodeUtf8 groupId)]
+  sessionParams <- getResponseBody <$> httpJSON (buildRequest host path query)
+  put st{sSessionParams = sessionParams} 
+
+getUpdates :: Bot.Handle -> StateT BotState IO (Either String UpdatesResponse)
+getUpdates botH =   do
   let host = (Bot.hUrl . Bot.cHost . Bot.hConfig) botH
   let apiKey = (Bot.cToken . Bot.hConfig) botH
   let path = mconcat ["/bot", apiKey, "/getUpdates"]
-  let query = [("timeout", Just "25"), ("offset", BC.pack . show <$> offset)]
-  Logger.debug (Bot.hLogger botH) (T.unpack (mconcat [T.decodeUtf8 host, path]))
-  response <- httpBS $ buildRequest host (T.encodeUtf8 path) query
+  let query = [("timeout", Just "25"), ("offset", Just $ BC.pack offset)]
+  liftIO (httpBS $ buildRequest host (T.encodeUtf8 path) query)
   let responseBody = getResponseBody response
-  Logger.debug (Bot.hLogger botH) ((T.unpack . T.decodeUtf8) responseBody)
   let updates = A.eitherDecodeStrict responseBody
   pure updates
 
 buildRequest :: BC.ByteString -> BC.ByteString -> Query -> Request
 buildRequest host path query =
   setRequestHost host $
-  setRequestQueryString query $ setRequestPath path $ setRequestSecure True $ setRequestPort 443 defaultRequest
+  setRequestQueryString query $
+  setRequestPath path $
+  setRequestSecure True $
+  setRequestPort 443
+  defaultRequest
 
 newtype InlineKeyboard =
   InlineKeyboard
