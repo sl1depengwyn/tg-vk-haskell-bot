@@ -1,5 +1,6 @@
 module Bot.Tg where
 
+import qualified Bot.Bot                    as Bot
 import qualified Bot.Logger                 as Logger
 import           Control.Monad              (MonadPlus (mzero), replicateM,
                                              void)
@@ -18,7 +19,6 @@ import qualified Data.Text.Encoding         as T
 import qualified Data.Yaml                  as Yaml
 import qualified GHC.Generics               as G
 import           Network.HTTP.Simple
-import qualified Bot.Bot as Bot
 
 type MapUserToRepeat = Map Int Int
 
@@ -28,8 +28,8 @@ data BotState =
     , sOffset :: Maybe Int
     }
 
-runBot :: Bot.Handle -> IO ()
-runBot botH = evalStateT (longPolling botH) (BotState {sUsers = Map.empty, sOffset = Nothing})
+run :: Bot.Handle -> IO ()
+run botH = evalStateT (longPolling botH) (BotState {sUsers = Map.empty, sOffset = Nothing})
 
 longPolling :: Bot.Handle -> StateT BotState IO ()
 longPolling botH =

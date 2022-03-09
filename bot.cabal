@@ -46,6 +46,7 @@ library
     , containers
     , http-conduit
     , mtl
+    , random
     , text
     , time
     , vector
@@ -70,6 +71,7 @@ executable bot-exe
     , containers
     , http-conduit
     , mtl
+    , random
     , text
     , time
     , vector
@@ -95,6 +97,7 @@ test-suite bot-test
     , containers
     , http-conduit
     , mtl
+    , random
     , text
     , time
     , vector

@@ -2,6 +2,8 @@ module Bot.Main where
 
 import qualified Bot.Bot             as Bot
 import qualified Bot.Logger          as Logger
+import qualified Bot.Tg              as Tg
+import qualified Bot.Vk              as Vk
 import qualified Data.Aeson.Extended as A
 import qualified Data.Yaml           as Yaml
 import qualified GHC.Generics        as G
@@ -31,5 +33,8 @@ run :: FilePath -> IO ()
 run path = do
   errOrConfig <- Yaml.decodeFileEither path
   Config bot logger <- either (fail . show) pure errOrConfig
-  Logger.withHandle logger (\hLogger -> 
-    Bot.withHandle bot hLogger Bot.runBot)
+  let toRun =
+        case Bot.cHost bot of
+          Bot.Vk _ -> Vk.run
+          Bot.Tg _ -> Tg.run
+  Logger.withHandle logger (\hLogger -> Bot.withHandle bot hLogger toRun)

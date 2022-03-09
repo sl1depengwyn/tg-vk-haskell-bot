@@ -22,6 +22,7 @@ import qualified Data.Vector                as V
 import qualified GHC.Generics               as G
 import           Network.HTTP.Simple
 import           System.Exit                (exitFailure)
+import           System.Random.Stateful
 
 apiVersion :: BC.ByteString
 apiVersion = "5.131"
@@ -51,8 +52,23 @@ data BotState =
   BotState
     { sUsers         :: MapUserToRepeat
     , sSessionParams :: SessionParams
+    , sGen           :: IO (IOGenM StdGen)
     }
-  deriving (Show)
+
+emptyState :: BotState
+emptyState =
+  BotState
+    { sUsers = Map.empty
+    , sSessionParams = SessionParams {sKey = "", sServer = "", sTs = ""}
+    , sGen = newIOGenM (mkStdGen 42)
+    }
+
+run :: Bot.Handle -> IO ()
+run botH =
+  evalStateT
+    (do getSessionParams botH
+        longPolling botH)
+    emptyState
 
 longPolling :: Bot.Handle -> StateT BotState IO ()
 longPolling botH =
@@ -64,10 +80,7 @@ longPolling botH =
     let ts = sTs sessionParams
     let logH = Bot.hLogger botH
     eitherUpdates <- getUpdates botH
-    case eitherUpdates of
-      (Right updatesResponse) -> do
-        put st {sSessionParams = sessionParams {sTs = uTs updatesResponse}}
-        mapM_ (processUpdate botH) (uUpdates updatesResponse)
+    either (lift . Logger.error logH . show) (processUpdates botH) eitherUpdates
 
 type UserId = Int
 
@@ -128,6 +141,8 @@ data Update
       { uCallbackQuery :: CallbackQuery
       }
   | UnsupportedUpdate
+      { uUpdateBody :: A.Object
+      }
   deriving (Show, G.Generic)
 
 instance A.FromJSON Update where
@@ -139,14 +154,39 @@ instance A.FromJSON Update where
          case type' of
            "message_new" -> UpdateWithMessage <$> ((obj A..: "object") >>= (A..: "message"))
            "message_event" -> UpdateWithCallback <$> obj A..: "object"
-           unsupportedType -> pure UnsupportedUpdate)
+           unsupportedType -> pure $ UnsupportedUpdate obj)
+
+processUpdates :: Bot.Handle -> UpdatesResponse -> StateT BotState IO ()
+processUpdates botH (UpdatesResponse updates ts) = do
+  st <- get
+  let sessionParams = sSessionParams st
+  let newState = st {sSessionParams = sessionParams {sTs = ts}}
+  let logH = Bot.hLogger botH
+  put newState
+  liftIO $ Logger.debug logH (mconcat ["ts: ", T.unpack ts])
+  mapM_ (processUpdate botH) updates
+processUpdates botH (UpdatesErrorWithTs err ts) = do
+  let logH = Bot.hLogger botH
+  liftIO $ Logger.warning logH (mconcat ["Fail from vk with error code: ", show err, ", new ts: ", T.unpack ts])
+  st <- get
+  let sessionParams = sSessionParams st
+  let newState = st {sSessionParams = sessionParams {sTs = ts}}
+  put newState
+processUpdates botH (UpdatesError err) = do
+  let logH = Bot.hLogger botH
+  liftIO $ Logger.warning logH (mconcat ["Fail from vk with error code: ", show err])
+  getSessionParams botH
 
 data UpdatesResponse
   = UpdatesResponse
       { uUpdates :: [Update]
       , uTs      :: T.Text
       }
-  | UpatesError
+  | UpdatesErrorWithTs
+      { uFailed :: Int
+      , uTs     :: T.Text
+      }
+  | UpdatesError
       { uFailed :: Int --error code
       }
   deriving (Show, G.Generic)
@@ -188,13 +228,15 @@ buildRequest host path query =
   setRequestHost host $
   setRequestQueryString query $ setRequestPath path $ setRequestSecure True $ setRequestPort 443 defaultRequest
 
-newtype InlineKeyboard =
+data InlineKeyboard =
   InlineKeyboard
-    { inline_keyboard :: [[KeyboardButton]]
+    { kIsInline :: Bool
+    , kButtons  :: [[KeyboardButton]]
     }
   deriving (Show, G.Generic)
 
-instance A.ToJSON InlineKeyboard
+instance A.ToJSON InlineKeyboard where
+  toJSON (InlineKeyboard isInline buttons) = A.object ["inline" A..= isInline, "buttons" A..= buttons]
 
 data KeyboardButton =
   SimpleButton
@@ -204,54 +246,66 @@ data KeyboardButton =
   deriving (Show)
 
 instance A.ToJSON KeyboardButton where
-  toJSON (SimpleButton buttonText buttonData) = A.object ["text" A..= buttonText, "callback_data" A..= buttonData]
+  toJSON (SimpleButton buttonText buttonData) =
+    A.object
+      ["action" A..= A.object ["type" A..= ("callback" :: T.Text), "label" A..= buttonText, "payload" A..= buttonData]]
 
 replyKeyboard :: InlineKeyboard
 replyKeyboard =
   InlineKeyboard
+    True
     [[SimpleButton "1" "1", SimpleButton "2" "2"], [SimpleButton "3" "3", SimpleButton "4" "4", SimpleButton "5" "5"]]
 
 type ReceiverId = Int
 
-sendMessage :: Bot.Handle -> ReceiverId -> T.Text -> Query -> IO (Response BC.ByteString)
+sendMessage :: Bot.Handle -> ReceiverId -> T.Text -> Query -> StateT BotState IO (Response BC.ByteString)
 sendMessage botH usrId method query = do
+  let host = (Bot.hUrl . Bot.cHost . Bot.hConfig) botH
+  let apiKey = (Bot.cToken . Bot.hConfig) botH
+  let path = mconcat ["method/", method]
+  let senderId = (BC.pack . show) usrId
+  st <- get
+  gen <- liftIO $ sGen st
+  randomId <- liftIO (uniformM gen :: IO Int)
   let logH = Bot.hLogger botH
+  liftIO $ Logger.debug logH (mconcat ["random_id: ", show randomId])
+  let queryTemplate =
+        [ ("v", Just apiVersion)
+        , ("access_token", Just $ T.encodeUtf8 apiKey)
+        , ("user_id", Just senderId)
+        , ("random_id", Just "0")
+ --       , ("random_id", Just $ (BC.pack . show) randomId)
+        ]
+  let finalQuery = queryTemplate ++ query
   let logMessage = mconcat ["sent message by ", T.unpack method, " to ", show usrId, " with query ", show finalQuery]
-  Logger.info logH logMessage
+  liftIO $ Logger.info logH logMessage
   httpBS (buildRequest host (T.encodeUtf8 path) finalQuery)
-  where
-    host = (Bot.hUrl . Bot.cHost . Bot.hConfig) botH
-    apiKey = (Bot.cToken . Bot.hConfig) botH
-    path = mconcat ["/bot", apiKey, method]
-    senderId = (BC.pack . show) usrId
-    chatId = ("chat_id", Just senderId)
-    finalQuery = chatId : query
 
-sendKeyboardMessage :: Bot.Handle -> ReceiverId -> IO (Response BC.ByteString)
-sendKeyboardMessage botH usrId = sendMessage botH usrId "/sendMessage" query
+sendKeyboardMessage :: Bot.Handle -> ReceiverId -> StateT BotState IO (Response BC.ByteString)
+sendKeyboardMessage botH usrId = sendMessage botH usrId "/messages.send" query
   where
     repeatText = (Bot.cRepeatMessage . Bot.hConfig) botH
-    query = [("text", Just (T.encodeUtf8 repeatText)), ("reply_markup", Just (LC.toStrict (A.encode replyKeyboard)))]
+    query = [("message", Just (T.encodeUtf8 repeatText)), ("keyboard", Just (LC.toStrict (A.encode replyKeyboard)))]
 
-sendTextMessage :: Bot.Handle -> T.Text -> ReceiverId -> IO (Response BC.ByteString)
-sendTextMessage botH message usrId = sendMessage botH usrId "/sendMessage" query
+sendTextMessage :: Bot.Handle -> T.Text -> ReceiverId -> StateT BotState IO (Response BC.ByteString)
+sendTextMessage botH message usrId = sendMessage botH usrId "/messages.send" query
   where
-    query = [("text", Just (T.encodeUtf8 message))]
+    query = [("message", Just (T.encodeUtf8 message))]
 
-sendHelpMessage :: Bot.Handle -> ReceiverId -> IO (Response BC.ByteString)
+sendHelpMessage :: Bot.Handle -> ReceiverId -> StateT BotState IO (Response BC.ByteString)
 sendHelpMessage botH = sendTextMessage botH helpText
   where
     helpText = (Bot.cHelpMessage . Bot.hConfig) botH
 
-sendFailMessage :: Bot.Handle -> ReceiverId -> IO (Response BC.ByteString)
+sendFailMessage :: Bot.Handle -> ReceiverId -> StateT BotState IO (Response BC.ByteString)
 sendFailMessage botH = sendTextMessage botH failText
   where
     failText = (Bot.cFailMessage . Bot.hConfig) botH
 
-sendSticker :: Bot.Handle -> Int -> ReceiverId -> IO (Response BC.ByteString)
-sendSticker botH fileId usrId = sendMessage botH usrId "/sendSticker" query
+sendSticker :: Bot.Handle -> Int -> ReceiverId -> StateT BotState IO (Response BC.ByteString)
+sendSticker botH fileId usrId = sendMessage botH usrId "/messages.send" query
   where
-    query = [("sticker", Just ((BC.pack . show) fileId))]
+    query = [("sticker_id", Just ((BC.pack . show) fileId))]
 
 replyMessage :: Bot.Handle -> ReceiverId -> IO (Response BC.ByteString) -> StateT BotState IO [Response BC.ByteString]
 replyMessage botH usrId sendFunction = do
@@ -263,13 +317,16 @@ replyMessage botH usrId sendFunction = do
 
 processMessage :: Bot.Handle -> Message -> StateT BotState IO ()
 processMessage botH (TextMessage usrId txt) = do
+  st <- get
   case txt of
-    "/help" -> void $ liftIO $ sendHelpMessage botH usrId
-    "/repeat" -> void $ liftIO $ sendKeyboardMessage botH usrId
-    txt' -> void $ replyMessage botH usrId (sendTextMessage botH txt' usrId)
+    "/help" -> void $ sendHelpMessage botH usrId
+    "/repeat" -> void $ sendKeyboardMessage botH usrId
+    txt' -> void $ replyMessage botH usrId (evalStateT (sendTextMessage botH txt' usrId) st)
   return ()
-processMessage botH (StickerMessage usrId fileId) = void $ replyMessage botH usrId (sendSticker botH fileId usrId)
-processMessage botH (UnsupportedMessage usrId) = liftIO $ void (sendFailMessage botH usrId)
+processMessage botH (StickerMessage usrId fileId) = do
+  st <- get
+  void $ replyMessage botH usrId (evalStateT (sendSticker botH fileId usrId) st)
+processMessage botH (UnsupportedMessage usrId) = void (sendFailMessage botH usrId)
 
 processCallback :: Bot.Handle -> CallbackQuery -> StateT BotState IO ()
 processCallback botH (CallbackQuery usrId reps) = do
@@ -284,6 +341,13 @@ processCallback botH (CallbackQuery usrId reps) = do
   let newState = st {sUsers = newMap}
   put newState
 
+processFail :: Bot.Handle -> A.Object -> StateT BotState IO ()
+processFail botH obj = do
+  let logH = Bot.hLogger botH
+  let warningMessage = mconcat ["Unsupported update: ", show obj]
+  liftIO $ Logger.warning logH warningMessage
+
 processUpdate :: Bot.Handle -> Update -> StateT BotState IO ()
 processUpdate botH (UpdateWithMessage msg) = processMessage botH msg
 processUpdate botH (UpdateWithCallback cb) = processCallback botH cb
+processUpdate botH (UnsupportedUpdate obj) = processFail botH obj
