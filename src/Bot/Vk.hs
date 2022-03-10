@@ -37,6 +37,23 @@ data SessionParams =
     }
   deriving (Show)
 
+getSessionParams :: Bot.Handle -> StateT BotState IO ()
+getSessionParams botH = do
+  st <- get
+  let host = (Bot.hUrl . Bot.cHost . Bot.hConfig) botH
+  let apiKey = (Bot.cToken . Bot.hConfig) botH
+  let mbGroupId = (Bot.cGroupId . Bot.hConfig) botH
+  liftIO $ when (isNothing mbGroupId) (putStrLn "No group id specified in config!" >> exitFailure)
+  let (Just groupId) = mbGroupId
+  let path = "/method/groups.getLongPollServer"
+  let query =
+        [ ("access_token", Just $ T.encodeUtf8 apiKey)
+        , ("v", Just apiVersion)
+        , ("group_id", Just $ T.encodeUtf8 groupId)
+        ]
+  sessionParams <- getResponseBody <$> httpJSON (buildRequest host path query)
+  put st {sSessionParams = sessionParams}
+
 instance A.FromJSON SessionParams where
   parseJSON =
     A.withObject
@@ -54,6 +71,7 @@ data BotState =
     , sSessionParams :: SessionParams
     , sGen           :: StdGen
     }
+  deriving (Show)
 
 emptyState :: BotState
 emptyState =
@@ -74,7 +92,6 @@ longPolling botH =
     let logH = Bot.hLogger botH
     let sessionParams = sSessionParams st
     let ts = sTs sessionParams
-    let logH = Bot.hLogger botH
     eitherUpdates <- getUpdates botH
     either (lift . Logger.error logH . show) (processUpdates botH) eitherUpdates
 
@@ -157,11 +174,8 @@ processUpdates botH (UpdatesResponse updates ts) = do
   st <- get
   let sessionParams = sSessionParams st
   let newState = st {sSessionParams = sessionParams {sTs = ts}}
-  let logH = Bot.hLogger botH
   put newState
-  liftIO $ Logger.debug logH (mconcat ["ts: ", T.unpack ts])
   last <$> mapM (processUpdate botH) updates
-  
 processUpdates botH (UpdatesErrorWithTs err ts) = do
   let logH = Bot.hLogger botH
   liftIO $ Logger.warning logH (mconcat ["Fail from vk with error code: ", show err, ", new ts: ", T.unpack ts])
@@ -191,23 +205,6 @@ data UpdatesResponse
 instance A.FromJSON UpdatesResponse where
   parseJSON = A.genericParseJSON A.customOptions
 
-getSessionParams :: Bot.Handle -> StateT BotState IO ()
-getSessionParams botH = do
-  st <- get
-  let host = (Bot.hUrl . Bot.cHost . Bot.hConfig) botH
-  let apiKey = (Bot.cToken . Bot.hConfig) botH
-  let mbGroupId = (Bot.cGroupId . Bot.hConfig) botH
-  liftIO $ when (isNothing mbGroupId) (putStrLn "No group id specified in config!" >> exitFailure)
-  let (Just groupId) = mbGroupId
-  let path = "/method/groups.getLongPollServer"
-  let query =
-        [ ("access_token", Just $ T.encodeUtf8 apiKey)
-        , ("v", Just apiVersion)
-        , ("group_id", Just $ T.encodeUtf8 groupId)
-        ]
-  sessionParams <- getResponseBody <$> httpJSON (buildRequest host path query)
-  put st {sSessionParams = sessionParams}
-
 getUpdates :: Bot.Handle -> StateT BotState IO (Either JSONException UpdatesResponse)
 getUpdates botH = do
   st <- get
@@ -215,8 +212,8 @@ getUpdates botH = do
   let sessionParams = sSessionParams st
   let ts = T.encodeUtf8 $ sTs sessionParams
   let key = T.encodeUtf8 $ sKey sessionParams
-  let query = [("act", Just "a_check"), ("key", Just key), ("ts", Just ts), ("wait", Just "25")]
   let server = T.unpack $ (sServer . sSessionParams) st
+  let query = [("act", Just "a_check"), ("key", Just key), ("ts", Just ts), ("wait", Just "25")]
   let request = setRequestQueryString query (parseRequest_ server)
   getResponseBody <$> httpJSONEither request
 
@@ -270,7 +267,7 @@ sendMessage botH usrId method query = do
         [ ("v", Just apiVersion)
         , ("access_token", Just $ T.encodeUtf8 apiKey)
         , ("user_id", Just senderId)
-       , ("random_id", Just $ (BC.pack . show) randomId)
+        , ("random_id", Just $ (BC.pack . show) randomId)
         ]
   let finalQuery = queryTemplate ++ query
   let logMessage = mconcat ["sent message by ", T.unpack method, " to ", show usrId, " with query ", show finalQuery]
@@ -308,23 +305,19 @@ replyMessage :: Bot.Handle -> ReceiverId -> StateT BotState IO () -> StateT BotS
 replyMessage botH usrId sendFunction = do
   st <- get
   let defNoReps = (Bot.cNumberOfResponses . Bot.hConfig) botH
-  last <$> case Map.lookup usrId (sUsers st) of
-    (Just noReps) -> replicateM noReps sendFunction
-    Nothing       -> replicateM defNoReps sendFunction
-  
+  last <$>
+    case Map.lookup usrId (sUsers st) of
+      (Just noReps) -> replicateM noReps sendFunction
+      Nothing       -> replicateM defNoReps sendFunction
 
 processMessage :: Bot.Handle -> Message -> StateT BotState IO ()
-processMessage botH (TextMessage usrId txt) = do
-  st <- get
+processMessage botH (TextMessage usrId txt) = 
   case txt of
-    "/help" -> sendHelpMessage botH usrId
+    "/help"   -> sendHelpMessage botH usrId
     "/repeat" -> sendKeyboardMessage botH usrId
-    txt' -> replyMessage botH usrId (sendTextMessage botH txt' usrId)
-  return ()
-processMessage botH (StickerMessage usrId fileId) = do
-  st <- get
-  void $ replyMessage botH usrId (sendSticker botH fileId usrId)
-processMessage botH (UnsupportedMessage usrId) = void (sendFailMessage botH usrId)
+    txt'      -> replyMessage botH usrId (sendTextMessage botH txt' usrId)
+processMessage botH (StickerMessage usrId fileId) = replyMessage botH usrId (sendSticker botH fileId usrId)
+processMessage botH (UnsupportedMessage usrId) = sendFailMessage botH usrId
 
 processCallback :: Bot.Handle -> CallbackQuery -> StateT BotState IO ()
 processCallback botH (CallbackQuery usrId reps) = do

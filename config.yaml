@@ -1,13 +1,18 @@
 
 bot:
   # use eiher vk or tg in case you are using telegram bot or vk bot respectively
-  host: tg
-  token: ""
+  host: vk
+  token: "<insert your api key here>"
+  # if using vk 
+  group_id: "<group id>"
+  # message is sent in response to /help command
   help_message: "help"
+  # message is sent in response to /repeat command
   repeat_message: "repeat"
+  # message is sent in response to unsupported message
   fail_message: "in case of fail"
+  # default number of echo messages
   number_of_responses: 1
 
 logger:
-  path: "asd"
-  verbosity: info
+  verbosity: debug
