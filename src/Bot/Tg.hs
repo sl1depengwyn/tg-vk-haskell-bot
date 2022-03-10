@@ -4,16 +4,13 @@ import qualified Bot.Bot                    as Bot
 import qualified Bot.Logger                 as Logger
 import           Control.Monad              (MonadPlus (mzero), replicateM,
                                              void)
-import qualified Control.Monad.IO.Class     as MIO
 import           Control.Monad.State
 import qualified Data.Aeson.Extended        as A
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Char8      as BC
-import qualified Data.ByteString.Lazy       as L
 import qualified Data.ByteString.Lazy.Char8 as LC
 import           Data.Map                   (Map)
 import qualified Data.Map                   as Map
-import           Data.Maybe
 import qualified Data.Text                  as T
 import qualified Data.Text.Encoding         as T
 import qualified Data.Yaml                  as Yaml
@@ -106,11 +103,12 @@ instance A.FromJSON Update where
 
 newtype UpdatesResponse =
   UpdatesResponse
-    { result :: [Update]
+    { uResult :: [Update]
     }
   deriving (Show, G.Generic)
 
-instance A.FromJSON UpdatesResponse
+instance A.FromJSON UpdatesResponse where
+  parseJSON = A.genericParseJSON A.customOptions
 
 getUpdates :: Bot.Handle -> Maybe Int -> IO (Either String [Update])
 getUpdates botH offset = do
@@ -123,7 +121,7 @@ getUpdates botH offset = do
   let responseBody = getResponseBody response
   Logger.debug (Bot.hLogger botH) ((T.unpack . T.decodeUtf8) responseBody)
   let updates = A.eitherDecodeStrict responseBody
-  pure $ result <$> updates
+  pure $ uResult <$> updates
 
 buildRequest :: BC.ByteString -> BC.ByteString -> Query -> Request
 buildRequest host path query =
@@ -132,21 +130,22 @@ buildRequest host path query =
 
 newtype InlineKeyboard =
   InlineKeyboard
-    { inline_keyboard :: [[KeyboardButton]]
+    { iInlineKeyboard :: [[KeyboardButton]]
     }
   deriving (Show, G.Generic)
 
-instance A.ToJSON InlineKeyboard
+instance A.ToJSON InlineKeyboard where
+  toJSON = A.genericToJSON A.customOptions
 
 data KeyboardButton =
   SimpleButton
     { bText :: T.Text
-    , bData :: T.Text
+    , bCallbackData :: T.Text
     }
-  deriving (Show)
+  deriving (Show, G.Generic)
 
 instance A.ToJSON KeyboardButton where
-  toJSON (SimpleButton buttonText buttonData) = A.object ["text" A..= buttonText, "callback_data" A..= buttonData]
+  toJSON = A.genericToJSON A.customOptions
 
 replyKeyboard :: InlineKeyboard
 replyKeyboard =
@@ -155,81 +154,81 @@ replyKeyboard =
 
 type ReceiverId = Int
 
-sendMessage :: Bot.Handle -> ReceiverId -> T.Text -> Query -> IO (Response BC.ByteString)
+sendMessage :: Bot.Handle -> ReceiverId -> T.Text -> Query -> StateT BotState IO ()
 sendMessage botH usrId method query = do
+  let apiKey = (Bot.cToken . Bot.hConfig) botH
+  let path = mconcat ["/bot", apiKey, method]
+  let senderId = (BC.pack . show) usrId
+  let chatId = ("chat_id", Just senderId)
+  let finalQuery = chatId : query
+  let host = (Bot.hUrl . Bot.cHost . Bot.hConfig) botH
+  httpBS (buildRequest host (T.encodeUtf8 path) finalQuery)
   let logH = Bot.hLogger botH
   let logMessage = mconcat ["sent message by ", T.unpack method, " to ", show usrId, " with query ", show finalQuery]
-  Logger.info logH logMessage
-  httpBS (buildRequest host (T.encodeUtf8 path) finalQuery)
-  where
-    host = (Bot.hUrl . Bot.cHost . Bot.hConfig) botH
-    apiKey = (Bot.cToken . Bot.hConfig) botH
-    path = mconcat ["/bot", apiKey, method]
-    senderId = (BC.pack . show) usrId
-    chatId = ("chat_id", Just senderId)
-    finalQuery = chatId : query
+  liftIO $ Logger.info logH logMessage
+  
 
-sendKeyboardMessage :: Bot.Handle -> ReceiverId -> IO (Response BC.ByteString)
+sendKeyboardMessage :: Bot.Handle -> ReceiverId -> StateT BotState IO ()
 sendKeyboardMessage botH usrId = sendMessage botH usrId "/sendMessage" query
   where
     repeatText = (Bot.cRepeatMessage . Bot.hConfig) botH
     query = [("text", Just (T.encodeUtf8 repeatText)), ("reply_markup", Just (LC.toStrict (A.encode replyKeyboard)))]
 
-sendTextMessage :: Bot.Handle -> T.Text -> ReceiverId -> IO (Response BC.ByteString)
+sendTextMessage :: Bot.Handle -> T.Text -> ReceiverId -> StateT BotState IO ()
 sendTextMessage botH message usrId = sendMessage botH usrId "/sendMessage" query
   where
     query = [("text", Just (T.encodeUtf8 message))]
 
-sendHelpMessage :: Bot.Handle -> ReceiverId -> IO (Response BC.ByteString)
+sendHelpMessage :: Bot.Handle -> ReceiverId -> StateT BotState IO ()
 sendHelpMessage botH = sendTextMessage botH helpText
   where
     helpText = (Bot.cHelpMessage . Bot.hConfig) botH
 
-sendFailMessage :: Bot.Handle -> ReceiverId -> IO (Response BC.ByteString)
+sendFailMessage :: Bot.Handle -> ReceiverId -> StateT BotState IO ()
 sendFailMessage botH = sendTextMessage botH failText
   where
     failText = (Bot.cFailMessage . Bot.hConfig) botH
 
-sendSticker :: Bot.Handle -> T.Text -> ReceiverId -> IO (Response BC.ByteString)
+sendSticker :: Bot.Handle -> T.Text -> ReceiverId -> StateT BotState IO ()
 sendSticker botH fileId usrId = sendMessage botH usrId "/sendSticker" query
   where
     query = [("sticker", Just (T.encodeUtf8 fileId))]
 
-replyMessage :: Bot.Handle -> ReceiverId -> IO (Response BC.ByteString) -> StateT BotState IO [Response BC.ByteString]
+replyMessage :: Bot.Handle -> ReceiverId -> StateT BotState IO () -> StateT BotState IO ()
 replyMessage botH usrId sendFunction = do
   st <- get
   let defNoReps = (Bot.cNumberOfResponses . Bot.hConfig) botH
-  case Map.lookup usrId (sUsers st) of
-    (Just noReps) -> liftIO $ replicateM noReps sendFunction
-    Nothing       -> liftIO $ replicateM defNoReps sendFunction
+  last<$> case Map.lookup usrId (sUsers st) of
+    (Just noReps) -> replicateM noReps sendFunction
+    Nothing       -> replicateM defNoReps sendFunction
 
 processMessage :: Bot.Handle -> Message -> StateT BotState IO ()
 processMessage botH (TextMessage us txt) = do
   let usrId = uId us
   case txt of
-    "/help" -> void $ liftIO $ sendHelpMessage botH usrId
-    "/repeat" -> void $ liftIO $ sendKeyboardMessage botH usrId
-    txt' -> void $ replyMessage botH usrId (sendTextMessage botH txt' usrId)
+    "/help" -> sendHelpMessage botH usrId
+    "/repeat" -> sendKeyboardMessage botH usrId
+    txt' -> replyMessage botH usrId (sendTextMessage botH txt' usrId)
   return ()
 processMessage botH (StickerMessage us st) =
   let usrId = uId us
       fileId = sFileId st
-   in void $ replyMessage botH usrId (sendSticker botH fileId usrId)
+   in replyMessage botH usrId (sendSticker botH fileId usrId)
 processMessage botH (UnsupportedMessage us) =
   let usrId = uId us
-   in liftIO $ void (sendFailMessage botH usrId)
+   in sendFailMessage botH usrId
 
 processCallback :: Bot.Handle -> CallbackQuery -> StateT BotState IO ()
 processCallback botH (CallbackQuery (User usrId) reps) = do
   st <- get
   let usersToReps = sUsers st
-  let logH = Bot.hLogger botH
   let newMap = Map.insert usrId (read reps) usersToReps
+  let newState = st {sUsers = newMap}
+  put newState
+  let logH = Bot.hLogger botH
   let logMsg =
         mconcat ["update in user-repeats map: for ", show usrId, " ", show $ Map.lookup usrId usersToReps, " ➔ ", reps]
   liftIO $ Logger.info logH logMsg
-  let newState = st {sUsers = newMap}
-  put newState
 
 processUpdate :: Bot.Handle -> Update -> StateT BotState IO ()
 processUpdate botH (UpdateWithMessage _ msg) = processMessage botH msg

@@ -9,6 +9,13 @@ import qualified Data.Text             as T
 import qualified Data.Yaml             as Yaml
 import qualified GHC.Generics          as G
 
+-- small remark:
+-- you can see different approaches in vk and tg parts
+-- in vk i avoid any redundant data types for parsing from json however
+-- in tg part i use some "ad-hoc" data types to use generic parsing and i have implemented 
+-- minimum amount of parsing by hands
+-- idk which is the best, seems like tg is more scalable, but vk is little more clear and clean
+
 data Host
   = Vk
       { hUrl :: BC.ByteString

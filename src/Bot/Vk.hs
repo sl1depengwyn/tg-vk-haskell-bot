@@ -3,7 +3,6 @@ module Bot.Vk where
 import qualified Bot.Logger                 as Logger
 import           Control.Monad              (MonadPlus (mzero), replicateM,
                                              void)
-import qualified Control.Monad.IO.Class     as MIO
 import           Control.Monad.State
 import qualified Data.Aeson.Extended        as A
 import           Data.Aeson.Types           (Parser)
@@ -16,9 +15,7 @@ import qualified Data.Map                   as Map
 import           Data.Maybe
 import qualified Data.Text                  as T
 import qualified Data.Text.Encoding         as T
-
 import qualified Bot.Bot                    as Bot
-import qualified Data.Vector                as V
 import qualified GHC.Generics               as G
 import           Network.HTTP.Simple
 import           System.Exit                (exitFailure)
