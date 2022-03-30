@@ -6,10 +6,10 @@ import qualified Bot.Tg              as Tg
 import qualified Bot.Vk              as Vk
 import qualified Data.Aeson.Extended as A
 import qualified Data.Yaml           as Yaml
-import qualified GHC.Generics        as G
+
 import           System.Environment  (getArgs, getProgName)
 import           System.Exit         (exitFailure)
-import qualified System.IO           as IO
+import qualified GHC.Generics as G
 
 data Config =
   Config

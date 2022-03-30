@@ -31,6 +31,10 @@ dependencies:
 - time
 - vector
 - random
+- opaleye
+- product-profunctors
+- postgresql-simple
+- resource-pool
 
 default-extensions:
 - OverloadedStrings
