@@ -1,6 +1,7 @@
 module Bot.Vk where
 
 import qualified Bot.Logger                 as Logger
+import qualified Bot.Database as Database
 import           Control.Monad              (MonadPlus (mzero), replicateM,
                                              void)
 import           Control.Monad.State
@@ -299,12 +300,12 @@ sendSticker botH fileId usrId = sendMessage botH usrId "/messages.send" query
 
 replyMessage :: Bot.Handle -> ReceiverId -> StateT BotState IO () -> StateT BotState IO ()
 replyMessage botH usrId sendFunction = do
-  st <- get
+  let db = Bot.hDatabase botH
   let defNoReps = (Bot.cNumberOfResponses . Bot.hConfig) botH
-  last <$>
-    case Map.lookup usrId (sUsers st) of
-      (Just noReps) -> replicateM noReps sendFunction
-      Nothing       -> replicateM defNoReps sendFunction
+  noR <- liftIO $ Database.getRepetitions db usrId
+  last <$> case noR of
+    [] -> replicateM defNoReps sendFunction
+    noReps:_       -> replicateM noReps sendFunction
 
 processMessage :: Bot.Handle -> Message -> StateT BotState IO ()
 processMessage botH (TextMessage usrId txt) = 
@@ -317,16 +318,11 @@ processMessage botH (UnsupportedMessage usrId) = sendFailMessage botH usrId
 
 processCallback :: Bot.Handle -> CallbackQuery -> StateT BotState IO ()
 processCallback botH (CallbackQuery usrId reps) = do
-  st <- get
-  let usersToReps = sUsers st
   let logH = Bot.hLogger botH
-  let newMap = Map.insert usrId reps usersToReps
+  liftIO $ Database.upsertUser (Bot.hDatabase botH) usrId reps
   let logMsg =
-        mconcat
-          ["update in user-repeats map: for ", show usrId, " ", show $ Map.lookup usrId usersToReps, " ➔ ", show reps]
+        mconcat ["update in user-repeats db: no of repeats for ", show usrId, " now is ", show reps]
   liftIO $ Logger.info logH logMsg
-  let newState = st {sUsers = newMap}
-  put newState
 
 processFail :: Bot.Handle -> A.Object -> StateT BotState IO ()
 processFail botH obj = do

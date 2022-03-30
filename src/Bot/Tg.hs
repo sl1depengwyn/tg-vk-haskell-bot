@@ -80,7 +80,7 @@ instance A.FromJSON Message where
 data CallbackQuery =
   CallbackQuery
     { cFrom :: User
-    , cData :: String
+    , cData :: String 
     }
   deriving (Show, G.Generic)
 
@@ -196,10 +196,10 @@ sendSticker botH fileId usrId = sendMessage botH usrId "/sendSticker" query
 
 replyMessage :: Bot.Handle -> ReceiverId -> StateT BotState IO () -> StateT BotState IO ()
 replyMessage botH usrId sendFunction = do
-  st <- get
   let db = Bot.hDatabase botH
   let defNoReps = (Bot.cNumberOfResponses . Bot.hConfig) botH
-  last <$> case Database.getRepetitions db usrId of
+  noR <- liftIO $ Database.getRepetitions db usrId
+  last <$> case noR of
     [] -> replicateM defNoReps sendFunction
     noReps:_       -> replicateM noReps sendFunction
 
@@ -221,14 +221,10 @@ processMessage botH (UnsupportedMessage us) =
 
 processCallback :: Bot.Handle -> CallbackQuery -> StateT BotState IO ()
 processCallback botH (CallbackQuery (User usrId) reps) = do
-  st <- get
-  let usersToReps = sUsers st
-  let newMap = Map.insert usrId (read reps) usersToReps
-  let newState = st {sUsers = newMap}
-  put newState
   let logH = Bot.hLogger botH
+  liftIO $ Database.upsertUser (Bot.hDatabase botH) usrId (read reps)
   let logMsg =
-        mconcat ["update in user-repeats db: for ", show usrId, " ", show $ Map.lookup usrId usersToReps, " ➔ ", reps]
+        mconcat ["update in user-repeats db: no of repeats for ", show usrId, " now is ", reps]
   liftIO $ Logger.info logH logMsg
 
 processUpdate :: Bot.Handle -> Update -> StateT BotState IO ()
