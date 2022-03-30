@@ -13,6 +13,7 @@ import qualified Data.Text                  as T
 import qualified Data.Text.Encoding         as T
 import qualified Database.PostgreSQL.Simple as PGS
 import qualified GHC.Generics               as G
+import           GHC.Int                    (Int64)
 import           Opaleye
 
 newtype Config =
@@ -52,7 +53,7 @@ initTable h =
                 \)"
 
 data User' a b =
-  User'
+  User
     { uId             :: a
     , uMessagesToSend :: b
     }
@@ -65,7 +66,7 @@ type UserField = User' (Field SqlInt4) (Field SqlInt4)
 $(makeAdaptorAndInstance "pUser" ''User')
 
 usersTable :: Table UserField UserField
-usersTable = table "users" (pUser User' {uId = tableField "id", uMessagesToSend = tableField "no_repeats"})
+usersTable = table "users" (pUser User {uId = tableField "id", uMessagesToSend = tableField "no_repeats"})
 
 usersSelect :: Select UserField
 usersSelect = selectTable usersTable
@@ -78,3 +79,23 @@ getRepetitions' id' = do
 
 getRepetitions :: Handle -> Int -> IO [Int]
 getRepetitions h id' = Pool.withResource (hPool h) (\conn -> runSelect conn (getRepetitions' id'))
+
+deleteUserById :: Column SqlInt4 -> Delete Int64
+deleteUserById id' = Delete {dTable = usersTable, dWhere = \user -> uId user .== id', dReturning = rCount}
+
+insertUser :: Column SqlInt4 -> Column SqlInt4 -> Insert Int64
+insertUser id' noReps = Insert {
+    iTable = usersTable,
+    iRows = [User {uId = id', uMessagesToSend = noReps}],
+    iReturning = rCount,
+    iOnConflict = Nothing 
+}
+
+upsertUser :: Handle -> Int -> Int -> IO Int64
+upsertUser h id' noReps = Pool.withResource (hPool h) (\conn -> do
+    let fieldId = toFields id'
+    let fieldNoReps = toFields noReps
+    runDelete_ conn (deleteUserById fieldId)
+    runInsert_ conn (insertUser fieldId fieldNoReps)
+    )
+

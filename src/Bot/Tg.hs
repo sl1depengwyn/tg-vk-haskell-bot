@@ -2,6 +2,7 @@ module Bot.Tg where
 
 import qualified Bot.Bot                    as Bot
 import qualified Bot.Logger                 as Logger
+import qualified Bot.Database as Database
 import           Control.Monad              (MonadPlus (mzero), replicateM,
                                              void)
 import           Control.Monad.State
@@ -19,14 +20,13 @@ import           Network.HTTP.Simple
 
 type MapUserToRepeat = Map Int Int
 
-data BotState =
+newtype BotState =
   BotState
-    { sUsers  :: MapUserToRepeat
-    , sOffset :: Maybe Int
+    { sOffset :: Maybe Int
     }
 
 run :: Bot.Handle -> IO ()
-run botH = evalStateT (longPolling botH) (BotState {sUsers = Map.empty, sOffset = Nothing})
+run botH = evalStateT (longPolling botH) (BotState {sOffset = Nothing})
 
 longPolling :: Bot.Handle -> StateT BotState IO ()
 longPolling botH =
@@ -197,10 +197,11 @@ sendSticker botH fileId usrId = sendMessage botH usrId "/sendSticker" query
 replyMessage :: Bot.Handle -> ReceiverId -> StateT BotState IO () -> StateT BotState IO ()
 replyMessage botH usrId sendFunction = do
   st <- get
+  let db = Bot.hDatabase botH
   let defNoReps = (Bot.cNumberOfResponses . Bot.hConfig) botH
-  last<$> case Map.lookup usrId (sUsers st) of
-    (Just noReps) -> replicateM noReps sendFunction
-    Nothing       -> replicateM defNoReps sendFunction
+  last <$> case Database.getRepetitions db usrId of
+    [] -> replicateM defNoReps sendFunction
+    noReps:_       -> replicateM noReps sendFunction
 
 processMessage :: Bot.Handle -> Message -> StateT BotState IO ()
 processMessage botH (TextMessage us txt) = do
@@ -227,7 +228,7 @@ processCallback botH (CallbackQuery (User usrId) reps) = do
   put newState
   let logH = Bot.hLogger botH
   let logMsg =
-        mconcat ["update in user-repeats map: for ", show usrId, " ", show $ Map.lookup usrId usersToReps, " ➔ ", reps]
+        mconcat ["update in user-repeats db: for ", show usrId, " ", show $ Map.lookup usrId usersToReps, " ➔ ", reps]
   liftIO $ Logger.info logH logMsg
 
 processUpdate :: Bot.Handle -> Update -> StateT BotState IO ()

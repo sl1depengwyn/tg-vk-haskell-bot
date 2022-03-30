@@ -1,5 +1,6 @@
 module Bot.Bot where
 
+import qualified Bot.Database as Database
 import qualified Bot.Logger            as Logger
 import qualified Data.Aeson.Extended   as A
 import qualified Data.ByteString       as B
@@ -51,8 +52,9 @@ instance A.FromJSON Config where
 data Handle =
   Handle
     { hConfig :: Config
+    , hDatabase :: Database.Handle
     , hLogger :: Logger.Handle
     }
 
-withHandle :: Config -> Logger.Handle -> (Handle -> IO ()) -> IO ()
-withHandle conf lHandle f = f $ Handle {hConfig = conf, hLogger = lHandle}
+withHandle :: Config -> Database.Handle -> Logger.Handle -> (Handle -> IO ()) -> IO ()
+withHandle conf dbHandle lHandle f = f $ Handle {hConfig = conf, hDatabase = dbHandle, hLogger = lHandle}

@@ -2,6 +2,7 @@ module Bot.Main where
 
 import qualified Bot.Bot             as Bot
 import qualified Bot.Logger          as Logger
+import qualified Bot.Database as Database
 import qualified Bot.Tg              as Tg
 import qualified Bot.Vk              as Vk
 import qualified Data.Aeson.Extended as A
@@ -13,7 +14,8 @@ import qualified GHC.Generics as G
 
 data Config =
   Config
-    { cBot    :: Bot.Config
+    { cDatabase :: Database.Config 
+    ,  cBot    :: Bot.Config
     , cLogger :: Logger.Config
     }
   deriving (Show, G.Generic)
@@ -32,9 +34,12 @@ main = do
 run :: FilePath -> IO ()
 run path = do
   errOrConfig <- Yaml.decodeFileEither path
-  Config bot logger <- either (fail . show) pure errOrConfig
+  conf <- either (fail . show) pure errOrConfig
+  let db = cDatabase conf
+  let bot = cBot conf
+  let logger = cLogger conf
   let toRun =
         case Bot.cHost bot of
           Bot.Vk _ -> Vk.run
           Bot.Tg _ -> Tg.run
-  Logger.withHandle logger (\hLogger -> Bot.withHandle bot hLogger toRun)
+  Logger.withHandle logger (\hLogger -> Database.withHandle db (\hDb ->  Bot.withHandle bot hDb hLogger toRun))

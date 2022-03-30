@@ -64,15 +64,14 @@ instance A.FromJSON SessionParams where
 
 data BotState =
   BotState
-    { sUsers         :: MapUserToRepeat
-    , sSessionParams :: SessionParams
+    { sSessionParams :: SessionParams
     , sGen           :: StdGen
     }
   deriving (Show)
 
 emptyState :: BotState
 emptyState =
-  BotState {sUsers = Map.empty, sSessionParams = SessionParams {sKey = "", sServer = "", sTs = ""}, sGen = mkStdGen 42}
+  BotState {sSessionParams = SessionParams {sKey = "", sServer = "", sTs = ""}, sGen = mkStdGen 42}
 
 run :: Bot.Handle -> IO ()
 run botH =
